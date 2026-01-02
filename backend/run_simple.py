@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Pipeline Estrategas IA Tools - v6
-Extrae productos automáticamente del dashboard de DropKiller
+Pipeline Estrategas IA Tools - v7
+Soporta IDs manuales o extracción automática
 """
 
 import os
 import sys
 import json
-import re
 import argparse
 import requests
 from datetime import datetime
@@ -21,12 +20,6 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://dzfwbwwjeiocvtyjeoqf.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-DROPKILLER_COUNTRIES = {
-    "CO": "65c75a5f-0c4a-45fb-8c90-5b538805a15a",
-    "MX": "98993bd0-955a-4fa3-9612-c9d4389c44d0",
-    "EC": "82811e8b-d17d-4ab9-847a-fa925785d566",
-}
 
 # ============== SUPABASE CLIENT ==============
 class SupabaseSimple:
@@ -45,162 +38,16 @@ class SupabaseSimple:
         response = requests.post(url, headers=headers, json=data)
         return response.status_code in [200, 201, 204]
 
-# ============== DROPKILLER SCRAPER ==============
-class DropKillerScraper:
-    """Extrae productos del dashboard de DropKiller parseando el HTML"""
-    
-    BASE_URL = "https://app.dropkiller.com"
-    
-    def __init__(self, jwt: str):
-        self.jwt = jwt
-        self.session = requests.Session()
-        self.session.cookies.set("__session", jwt, domain="app.dropkiller.com")
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-        })
-    
-    def get_products(self, country: str = "CO", min_sales: int = 10, limit: int = 50) -> List[Dict]:
-        """
-        Obtiene productos del dashboard de DropKiller
-        Parsea el HTML para extraer los datos embebidos
-        """
-        country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
-        
-        # URL con filtros
-        url = f"{self.BASE_URL}/dashboard/products"
-        params = {
-            "platform": "dropi",
-            "country": country_id,
-            "s7min": min_sales,
-            "stock-min": 30,
-            "limit": limit,
-        }
-        
-        print(f"    Cargando dashboard de DropKiller...")
-        
-        try:
-            response = self.session.get(url, params=params, timeout=30)
-            print(f"    Status: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"    Error: {response.status_code}")
-                return []
-            
-            html = response.text
-            
-            # Método 1: Buscar __NEXT_DATA__
-            products = self._extract_from_next_data(html)
-            if products:
-                return products
-            
-            # Método 2: Buscar JSON inline en scripts
-            products = self._extract_from_scripts(html)
-            if products:
-                return products
-            
-            # Método 3: Buscar patrones de productos en el HTML
-            products = self._extract_from_html_patterns(html)
-            if products:
-                return products
-            
-            print("    No se pudieron extraer productos del HTML")
-            return []
-            
-        except Exception as e:
-            print(f"    Error: {e}")
-            return []
-    
-    def _extract_from_next_data(self, html: str) -> List[Dict]:
-        """Extrae productos de __NEXT_DATA__ (Next.js)"""
-        try:
-            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-            if match:
-                data = json.loads(match.group(1))
-                
-                # Navegar la estructura de Next.js
-                props = data.get("props", {}).get("pageProps", {})
-                
-                # Buscar productos en diferentes ubicaciones posibles
-                products = (
-                    props.get("products") or 
-                    props.get("initialProducts") or 
-                    props.get("data", {}).get("products") or
-                    props.get("dehydratedState", {}).get("queries", [{}])[0].get("state", {}).get("data", {}).get("products")
-                )
-                
-                if products and isinstance(products, list):
-                    print(f"    Extraidos {len(products)} productos de __NEXT_DATA__")
-                    return products
-        except Exception as e:
-            print(f"    Error parseando __NEXT_DATA__: {e}")
-        
-        return []
-    
-    def _extract_from_scripts(self, html: str) -> List[Dict]:
-        """Busca JSON de productos en scripts inline"""
-        try:
-            # Buscar arrays de productos
-            patterns = [
-                r'"products"\s*:\s*(\[[^\]]+\])',
-                r'products\s*=\s*(\[[^\]]+\])',
-                r'"data"\s*:\s*\{"products"\s*:\s*(\[[^\]]+\])',
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, html)
-                for match in matches:
-                    try:
-                        products = json.loads(match)
-                        if products and len(products) > 0:
-                            print(f"    Extraidos {len(products)} productos de scripts")
-                            return products
-                    except:
-                        continue
-        except Exception as e:
-            print(f"    Error buscando en scripts: {e}")
-        
-        return []
-    
-    def _extract_from_html_patterns(self, html: str) -> List[Dict]:
-        """Extrae datos de productos desde patrones HTML"""
-        products = []
-        
-        try:
-            # Buscar patrones como data-product-id, data-external-id, etc.
-            id_pattern = r'data-(?:product-id|external-id|id)=["\'](\d+)["\']'
-            name_pattern = r'<h[23][^>]*>([^<]+)</h[23]>'
-            price_pattern = r'\$\s*([\d,]+)'
-            
-            ids = re.findall(id_pattern, html)
-            
-            if ids:
-                print(f"    Encontrados {len(ids)} IDs de productos en HTML")
-                for pid in ids[:50]:
-                    products.append({
-                        "externalId": pid,
-                        "id": pid,
-                        "name": f"Producto {pid}",
-                    })
-                return products
-                
-        except Exception as e:
-            print(f"    Error extrayendo de HTML: {e}")
-        
-        return []
-
 # ============== DROPKILLER PUBLIC API ==============
 class DropKillerPublicAPI:
-    """API pública para obtener historial de ventas"""
+    """API pública - NO requiere autenticación"""
     
     BASE_URL = "https://extension-api.dropkiller.com"
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
         })
     
@@ -209,16 +56,24 @@ class DropKillerPublicAPI:
         if not product_ids:
             return []
         
-        ids_str = ",".join(str(pid) for pid in product_ids)
-        url = f"{self.BASE_URL}/api/v3/history?ids={ids_str}&country={country}"
+        all_results = []
         
-        try:
-            response = self.session.get(url, timeout=30)
-            if response.status_code == 200:
-                return response.json() if isinstance(response.json(), list) else []
-        except:
-            pass
-        return []
+        # Procesar en batches de 10
+        for i in range(0, len(product_ids), 10):
+            batch = product_ids[i:i+10]
+            ids_str = ",".join(str(pid) for pid in batch)
+            url = f"{self.BASE_URL}/api/v3/history?ids={ids_str}&country={country}"
+            
+            try:
+                response = self.session.get(url, timeout=30)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list):
+                        all_results.extend(data)
+            except Exception as e:
+                print(f"    Error batch {i//10 + 1}: {e}")
+        
+        return all_results
 
 # ============== MARGIN CALCULATOR ==============
 def calculate_margin(cost_price: int, suggested_price: int) -> Dict:
@@ -242,17 +97,13 @@ def calculate_margin(cost_price: int, suggested_price: int) -> Dict:
     }
 
 # ============== VIABILITY SCORER ==============
-def calculate_viability(product: Dict, margin: Dict, history: List[Dict]) -> tuple:
+def calculate_viability(product: Dict, margin: Dict) -> tuple:
     score = 0
     reasons = []
     
+    history = product.get("history", [])
     total_sales = sum(d.get("soldUnits", 0) for d in history)
     recent_sales = sum(d.get("soldUnits", 0) for d in history[-7:]) if len(history) >= 7 else total_sales
-    
-    # Ventas desde el producto (si el historial está vacío)
-    if total_sales == 0:
-        recent_sales = product.get("sales7d", product.get("soldUnits7d", 0))
-        total_sales = product.get("sales30d", product.get("soldUnits30d", recent_sales * 4))
     
     # 1. Ventas (35 pts)
     if recent_sales >= 50:
@@ -301,10 +152,7 @@ def calculate_viability(product: Dict, margin: Dict, history: List[Dict]) -> tup
         score += 10
     
     # 4. Stock (15 pts)
-    stock = product.get("stock", product.get("currentStock", 0))
-    if history:
-        stock = history[-1].get("stock", stock)
-    
+    stock = history[-1].get("stock", 0) if history else 0
     if stock >= 100:
         score += 15
         reasons.append(f"Stock: {stock}")
@@ -322,7 +170,7 @@ def calculate_viability(product: Dict, margin: Dict, history: List[Dict]) -> tup
 # ============== CLAUDE ANALYZER ==============
 def analyze_with_claude(product: Dict, margin: Dict, api_key: str) -> Dict:
     if not api_key:
-        return {"recommendation": "REVISAR", "unused_angles": [], "optimal_price": margin["optimal_price"]}
+        return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia"], "optimal_price": margin["optimal_price"]}
     
     prompt = f"""Analiza este producto dropshipping Colombia:
 
@@ -331,7 +179,7 @@ Costo: ${margin['cost_price']:,} COP
 Precio venta: ${margin['suggested_price']:,} COP
 Margen: ${margin['net_margin']:,} COP
 ROI: {margin['roi']}%
-Ventas 7d: {product.get('sales_7d', 0)}
+Ventas 7d: {product.get('recent_sales', 0)}
 
 JSON solo:
 {{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2"], "key_insight": "oracion"}}"""
@@ -351,72 +199,50 @@ JSON solo:
     except:
         pass
     
-    return {"recommendation": "REVISAR", "unused_angles": [], "optimal_price": margin["optimal_price"]}
+    return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia"], "optimal_price": margin["optimal_price"]}
 
 # ============== MAIN PIPELINE ==============
-def run_pipeline(jwt: str, country: str = "CO", min_sales: int = 10, max_products: int = 20, use_ai: bool = True):
+def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = True):
     print("=" * 60)
-    print("  ESTRATEGAS IA - Pipeline v6 (Automatico)")
+    print("  ESTRATEGAS IA - Pipeline v7")
     print("=" * 60)
     
+    if not product_ids:
+        print("\nERROR: No hay IDs de productos")
+        return
+    
     supabase = SupabaseSimple(SUPABASE_URL, SUPABASE_KEY)
-    scraper = DropKillerScraper(jwt)
-    public_api = DropKillerPublicAPI()
+    api = DropKillerPublicAPI()
     
     stats = {"scanned": 0, "analyzed": 0, "recommended": 0}
     
-    # 1. Obtener productos del dashboard
-    print(f"\n[1] Extrayendo productos de DropKiller ({country})...")
-    print(f"    Filtros: ventas_7d >= {min_sales}, stock >= 30")
+    print(f"\n[1] Consultando {len(product_ids)} productos ({country})...")
     
-    products = scraper.get_products(country, min_sales, max_products)
+    products = api.get_history(product_ids, country)
     
-    if not products:
-        print("\n" + "=" * 60)
-        print("  No se pudieron extraer productos.")
-        print("\n  El JWT puede haber expirado. Obtén uno nuevo:")
-        print("  1. Ve a app.dropkiller.com/dashboard/products")
-        print("  2. F12 -> Application -> Cookies -> __session")
-        print("  3. Copia y ejecuta inmediatamente")
-        print("=" * 60)
+    # Filtrar productos con datos
+    products_with_data = [p for p in products if p.get("history") and len(p.get("history", [])) > 0]
+    
+    if not products_with_data:
+        print("\n    No se encontraron productos con historial de ventas.")
+        print("    Los IDs pueden no estar siendo trackeados por DropKiller.")
         return
     
-    print(f"\n    OK: {len(products)} productos extraidos")
-    stats["scanned"] = len(products)
+    print(f"    OK: {len(products_with_data)} productos con historial")
+    stats["scanned"] = len(products_with_data)
     
-    # 2. Obtener IDs para consultar historial
-    product_ids = []
-    for p in products:
-        pid = p.get("externalId") or p.get("external_id") or p.get("id")
-        if pid:
-            product_ids.append(str(pid))
+    print(f"\n[2] Analizando productos...")
     
-    # 3. Obtener historial de ventas (API pública)
-    print(f"\n[2] Obteniendo historial de ventas...")
-    history_data = {}
-    
-    for i in range(0, len(product_ids), 10):
-        batch = product_ids[i:i+10]
-        histories = public_api.get_history(batch, country)
-        for h in histories:
-            eid = h.get("externalId")
-            if eid:
-                history_data[eid] = h.get("history", [])
-    
-    print(f"    OK: Historial para {len(history_data)} productos")
-    
-    # 4. Analizar productos
-    print(f"\n[3] Analizando productos...")
-    
-    for i, product in enumerate(products[:max_products], 1):
-        ext_id = str(product.get("externalId") or product.get("external_id") or product.get("id", ""))
-        name = (product.get("name") or product.get("title") or "Sin nombre")[:45]
+    for i, product in enumerate(products_with_data, 1):
+        ext_id = product.get("externalId", "")
+        name = (product.get("name") or "Sin nombre")[:45]
+        history = product.get("history", [])
         
-        print(f"\n  [{i}/{min(len(products), max_products)}] {name}")
+        print(f"\n  [{i}/{len(products_with_data)}] {name}")
         
         # Precios
-        cost = product.get("salePrice") or product.get("price") or product.get("cost", 35000)
-        suggested = product.get("suggestedPrice") or product.get("suggested_price") or int(cost * 2.2)
+        cost = product.get("salePrice", 35000)
+        suggested = int(cost * 2.2)
         
         print(f"    ID: {ext_id} | Costo: ${cost:,}")
         
@@ -424,19 +250,17 @@ def run_pipeline(jwt: str, country: str = "CO", min_sales: int = 10, max_product
         margin = calculate_margin(cost, suggested)
         print(f"    Margen: ${margin['net_margin']:,} | ROI: {margin['roi']}%")
         
-        # Historial
-        history = history_data.get(ext_id, [])
-        
         # Viabilidad
-        score, reasons, verdict, total_sales, recent_sales = calculate_viability(product, margin, history)
-        print(f"    Ventas 7d: {recent_sales} | Score: {score}/100 - {verdict}")
+        score, reasons, verdict, total_sales, recent_sales = calculate_viability(product, margin)
+        print(f"    Ventas 7d: {recent_sales} | Total: {total_sales}")
+        print(f"    Score: {score}/100 - {verdict}")
         
         stats["analyzed"] += 1
         
         # IA
         ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
         if use_ai and ANTHROPIC_API_KEY and score >= 30:
-            product["sales_7d"] = recent_sales
+            product["recent_sales"] = recent_sales
             ai_result = analyze_with_claude(product, margin, ANTHROPIC_API_KEY)
             print(f"    IA: {ai_result.get('recommendation')}")
         
@@ -447,19 +271,32 @@ def run_pipeline(jwt: str, country: str = "CO", min_sales: int = 10, max_product
             stats["recommended"] += 1
             print(f"    ✓ RECOMENDADO")
         
+        # Tendencia
+        trend_direction = "STABLE"
+        trend_pct = 0
+        if len(history) >= 4:
+            first = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
+            second = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
+            if first > 0:
+                trend_pct = ((second - first) / first) * 100
+                trend_direction = "UP" if trend_pct > 15 else ("DOWN" if trend_pct < -15 else "STABLE")
+        
+        # Stock actual
+        current_stock = history[-1].get("stock", 0) if history else 0
+        
         # Guardar
         data = {
             "external_id": ext_id,
             "platform": "dropi",
             "country_code": country,
             "name": name,
-            "image_url": product.get("image") or product.get("imageUrl") or "",
+            "image_url": "",
             "cost_price": cost,
             "suggested_price": suggested,
             "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
             "sales_7d": recent_sales,
             "sales_30d": total_sales,
-            "current_stock": product.get("stock", 0),
+            "current_stock": current_stock,
             "real_margin": margin["net_margin"],
             "roi": margin["roi"],
             "breakeven_price": margin["breakeven"],
@@ -469,6 +306,8 @@ def run_pipeline(jwt: str, country: str = "CO", min_sales: int = 10, max_product
             "unused_angles": ai_result.get("unused_angles", []),
             "ai_recommendation": ai_result.get("recommendation", verdict),
             "ai_analysis": json.dumps(ai_result),
+            "trend_direction": trend_direction,
+            "trend_percentage": round(trend_pct, 1),
             "is_recommended": is_recommended,
             "analyzed_at": datetime.now().isoformat()
         }
@@ -487,11 +326,9 @@ def run_pipeline(jwt: str, country: str = "CO", min_sales: int = 10, max_product
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v6")
-    parser.add_argument("--jwt", required=True, help="JWT de DropKiller (__session)")
+    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v7")
+    parser.add_argument("--ids", required=True, help="IDs de productos separados por coma")
     parser.add_argument("--country", default="CO", help="Pais (CO, MX, EC)")
-    parser.add_argument("--min-sales", type=int, default=10, help="Ventas minimas 7d")
-    parser.add_argument("--max", type=int, default=20, help="Max productos")
     parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     args = parser.parse_args()
     
@@ -499,7 +336,9 @@ def main():
         print("ERROR: Falta SUPABASE_KEY en .env")
         sys.exit(1)
     
-    run_pipeline(args.jwt, args.country, args.min_sales, args.max, not args.no_ai)
+    product_ids = [id.strip() for id in args.ids.split(",") if id.strip()]
+    
+    run_pipeline(product_ids, args.country, not args.no_ai)
 
 
 if __name__ == "__main__":
