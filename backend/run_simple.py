@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pipeline SIMPLE de Estrategas IA Tools - v4
-Usa la API PÚBLICA de DropKiller (NO requiere autenticación)
+Pipeline SIMPLE de Estrategas IA Tools - v5
+Permite ingresar IDs de productos manualmente o desde archivo
 """
 
 import os
@@ -42,10 +42,7 @@ class SupabaseSimple:
 
 # ============== DROPKILLER PUBLIC API ==============
 class DropKillerPublicAPI:
-    """
-    API PÚBLICA de DropKiller - NO requiere autenticación
-    Endpoint: https://extension-api.dropkiller.com/api/v3/history
-    """
+    """API PÚBLICA de DropKiller - NO requiere autenticación"""
     
     BASE_URL = "https://extension-api.dropkiller.com"
     
@@ -54,13 +51,11 @@ class DropKillerPublicAPI:
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
+            "Origin": "chrome-extension://dropkiller",
         })
     
     def get_product_history(self, product_ids: List[str], country: str = "CO") -> List[Dict]:
-        """
-        Obtiene historial de ventas de productos
-        NO requiere autenticación
-        """
+        """Obtiene historial de ventas - NO requiere auth"""
         if not product_ids:
             return []
         
@@ -73,57 +68,23 @@ class DropKillerPublicAPI:
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"    OK: {len(data)} productos con historial")
-                return data
+                if isinstance(data, list):
+                    print(f"    OK: {len(data)} productos con datos")
+                    return data
+                return []
             else:
-                print(f"    Error: {response.status_code}")
+                print(f"    Status: {response.status_code}")
+                print(f"    Response: {response.text[:300]}")
                 return []
         except Exception as e:
             print(f"    Error: {e}")
             return []
 
-# ============== PRODUCT IDS - Productos populares conocidos ==============
-# Estos son IDs reales de productos en Dropi Colombia que tienen ventas
-POPULAR_PRODUCT_IDS = [
-    # Belleza y cuidado personal
-    "1645891",  # Set Destellos de Oro
-    "2017300",  # Producto popular
-    "1390113",  # Producto con ventas
-    "1856234",  # Skincare
-    "1923456",  # Maquillaje
-    # Hogar
-    "1745632",  # Organizador
-    "1834521",  # Decoración
-    "1956743",  # Cocina
-    # Tecnología
-    "1623458",  # Accesorios tech
-    "1789234",  # Gadgets
-    # Moda
-    "1534267",  # Ropa
-    "1678923",  # Accesorios
-    "1890234",  # Calzado
-    # Mascotas
-    "1456789",  # Accesorios mascotas
-    "1567890",  # Juguetes mascotas
-    # Fitness
-    "1345678",  # Gym
-    "1478923",  # Yoga
-    # Más productos
-    "2156789",
-    "2234567",
-    "2345678",
-    "2456789",
-    "2567890",
-    "2678901",
-    "2789012",
-    "2890123",
-]
-
 # ============== MARGIN CALCULATOR ==============
 def calculate_margin(cost_price: int, suggested_price: int) -> Dict:
     """Calcula margen real con costos de dropshipping Colombia"""
-    shipping = 18000  # Envío COD
-    cpa = 25000       # CPA promedio
+    shipping = 18000
+    cpa = 25000
     return_rate = 0.22
     cancel_rate = 0.15
     
@@ -149,28 +110,27 @@ def calculate_margin(cost_price: int, suggested_price: int) -> Dict:
 
 # ============== VIABILITY SCORER ==============
 def calculate_viability(product: Dict, margin: Dict) -> tuple:
-    """Calcula score de viabilidad basado en ventas y margen"""
+    """Calcula score de viabilidad"""
     score = 0
     reasons = []
     
-    # Calcular ventas totales del historial
     history = product.get("history", [])
     total_sales = sum(day.get("soldUnits", 0) for day in history)
     recent_sales = sum(day.get("soldUnits", 0) for day in history[-7:]) if len(history) >= 7 else total_sales
     
-    # 1. Ventas recientes (35 pts)
+    # 1. Ventas (35 pts)
     if recent_sales >= 50:
         score += 35
-        reasons.append(f"Ventas altas: {recent_sales} en 7 dias")
+        reasons.append(f"Ventas altas: {recent_sales} en 7d")
     elif recent_sales >= 20:
         score += 25
-        reasons.append(f"Ventas buenas: {recent_sales} en 7 dias")
+        reasons.append(f"Ventas buenas: {recent_sales} en 7d")
     elif recent_sales >= 5:
         score += 15
-        reasons.append(f"Ventas moderadas: {recent_sales} en 7 dias")
+        reasons.append(f"Ventas moderadas: {recent_sales} en 7d")
     elif recent_sales > 0:
         score += 5
-        reasons.append(f"Pocas ventas: {recent_sales} en 7 dias")
+        reasons.append(f"Pocas ventas: {recent_sales} en 7d")
     else:
         reasons.append("Sin ventas recientes")
     
@@ -192,7 +152,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     if len(history) >= 4:
         first_half = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
         second_half = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
-        
         if second_half > first_half * 1.2:
             score += 20
             reasons.append("Tendencia en alza")
@@ -210,13 +169,13 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     stock = history[-1].get("stock", 0) if history else 0
     if stock >= 100:
         score += 15
-        reasons.append(f"Stock alto: {stock} unidades")
+        reasons.append(f"Stock alto: {stock}")
     elif stock >= 30:
         score += 10
-        reasons.append(f"Stock OK: {stock} unidades")
+        reasons.append(f"Stock OK: {stock}")
     elif stock > 0:
         score += 5
-        reasons.append(f"Stock bajo: {stock} unidades")
+        reasons.append(f"Stock bajo: {stock}")
     else:
         reasons.append("Sin stock")
     
@@ -245,10 +204,10 @@ Precio proveedor: ${margin['cost_price']:,} COP
 Precio sugerido: ${margin['suggested_price']:,} COP  
 Margen neto: ${margin['net_margin']:,} COP
 ROI: {margin['roi']}%
-Ventas recientes: {product.get('recent_sales', 0)} unidades
+Ventas 7d: {product.get('recent_sales', 0)}
 
-Responde SOLO en JSON valido:
-{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2", "angulo3"], "key_insight": "una oracion corta"}}"""
+Responde SOLO JSON:
+{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2"], "key_insight": "oracion corta"}}"""
 
     try:
         response = requests.post(
@@ -273,79 +232,77 @@ Responde SOLO en JSON valido:
     except Exception as e:
         print(f"      Claude: {e}")
     
-    return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia", "Oferta limitada"], "optimal_price": margin["optimal_price"]}
+    return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia"], "optimal_price": margin["optimal_price"]}
 
 # ============== MAIN PIPELINE ==============
-def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = True):
+def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = True):
     print("=" * 60)
-    print("  ESTRATEGAS IA - Pipeline de Analisis v4")
-    print("  Fuente: API Publica DropKiller (sin autenticacion)")
+    print("  ESTRATEGAS IA - Pipeline de Analisis v5")
     print("=" * 60)
+    
+    if not product_ids:
+        print("\nERROR: No se proporcionaron IDs de productos")
+        print("\nUso:")
+        print("  python run_simple.py --ids 1645891,2017300,1390113")
+        print("\nO crea un archivo product_ids.txt con un ID por linea")
+        return
     
     supabase = SupabaseSimple(SUPABASE_URL, SUPABASE_KEY)
     api = DropKillerPublicAPI()
     
     stats = {"scanned": 0, "analyzed": 0, "recommended": 0}
     
-    # Obtener historial de productos
-    print(f"\n[1] Consultando productos populares ({country})...")
+    print(f"\n[1] Consultando {len(product_ids)} productos ({country})...")
     
     # Consultar en batches de 10
     all_products = []
-    product_ids = POPULAR_PRODUCT_IDS[:max_products * 2]  # Pedir más por si algunos no tienen datos
-    
     for i in range(0, len(product_ids), 10):
         batch = product_ids[i:i+10]
         products = api.get_product_history(batch, country)
         all_products.extend(products)
-        
-        if len(all_products) >= max_products:
-            break
     
-    # Filtrar productos con datos
-    products_with_data = [p for p in all_products if p.get("history") and len(p.get("history", [])) > 0]
+    products_with_data = [p for p in all_products if p.get("history")]
     
     if not products_with_data:
         print("\n" + "=" * 60)
-        print("  No se encontraron productos con historial.")
-        print("  La API publica solo tiene datos de productos trackeados.")
+        print("  No se encontraron datos para esos productos.")
+        print("\n  Posibles causas:")
+        print("  1. Los IDs no existen en Dropi")
+        print("  2. Los productos no estan siendo trackeados por DropKiller")
+        print("\n  Solucion:")
+        print("  - Ve a app.dropi.co y copia IDs de productos reales")
+        print("  - El ID esta en la URL: dropi.co/products/[ID]")
         print("=" * 60)
         return
     
     print(f"\nOK: {len(products_with_data)} productos con historial")
     stats["scanned"] = len(products_with_data)
     
-    # Analizar cada producto
     print("\n[2] Analizando productos...")
     
-    for i, product in enumerate(products_with_data[:max_products], 1):
+    for i, product in enumerate(products_with_data, 1):
         name = product.get("name", "Sin nombre")[:45]
         external_id = product.get("externalId", "")
         
-        print(f"\n  [{i}/{min(len(products_with_data), max_products)}] {name}")
+        print(f"\n  [{i}/{len(products_with_data)}] {name}")
         
-        # Obtener precios del historial
         history = product.get("history", [])
         latest = history[-1] if history else {}
         
         cost_price = product.get("salePrice", latest.get("salePrice", 35000))
-        # Estimar precio de venta (2x-2.5x el costo es típico)
         suggested_price = int(cost_price * 2.2)
         
         print(f"    ID: {external_id} | Costo: ${cost_price:,}")
         
-        # Calcular margen
         margin = calculate_margin(cost_price, suggested_price)
         print(f"    Margen: ${margin['net_margin']:,} | ROI: {margin['roi']}%")
         
-        # Calcular viabilidad
         score, reasons, verdict, total_sales, recent_sales = calculate_viability(product, margin)
         print(f"    Ventas 7d: {recent_sales} | Total: {total_sales}")
         print(f"    Score: {score}/100 - {verdict}")
         
         stats["analyzed"] += 1
         
-        # Análisis con Claude (opcional)
         ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
         if use_ai and ANTHROPIC_API_KEY and score >= 30:
             print(f"    Analizando con IA...")
@@ -353,11 +310,9 @@ def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = Tru
             ai_result = analyze_with_claude(product, margin, ANTHROPIC_API_KEY)
             print(f"    IA: {ai_result.get('recommendation', 'N/A')}")
         
-        # Determinar si recomendar
         is_recommended = (
             score >= 45 and 
             margin["roi"] >= 5 and
-            recent_sales >= 1 and
             ai_result.get("recommendation") != "NO_VENDER"
         )
         
@@ -365,7 +320,7 @@ def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = Tru
             stats["recommended"] += 1
             print(f"    ✓ RECOMENDADO")
         
-        # Calcular tendencia
+        # Trend
         trend_direction = "STABLE"
         trend_pct = 0
         if len(history) >= 4:
@@ -375,10 +330,8 @@ def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = Tru
                 trend_pct = ((second_half - first_half) / first_half) * 100
                 trend_direction = "UP" if trend_pct > 15 else ("DOWN" if trend_pct < -15 else "STABLE")
         
-        # Preparar historial para guardar
         sales_history = [{"date": d.get("date"), "sales": d.get("soldUnits", 0)} for d in history[-30:]]
         
-        # Guardar en Supabase
         data = {
             "external_id": external_id,
             "platform": "dropi",
@@ -414,35 +367,58 @@ def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = Tru
         }
         
         if supabase.upsert("analyzed_products", data):
-            print(f"    Guardado en DB ✓")
-        else:
-            print(f"    Error guardando")
+            print(f"    Guardado ✓")
     
-    # Resumen
     print("\n" + "=" * 60)
     print("  RESUMEN")
     print("=" * 60)
-    print(f"  Productos escaneados: {stats['scanned']}")
     print(f"  Productos analizados: {stats['analyzed']}")
     print(f"  Productos recomendados: {stats['recommended']}")
-    print("=" * 60)
-    print("\n  Los productos fueron guardados en Supabase.")
-    print("  Puedes verlos en: https://dzfwbwwjeiocvtyjeoqf.supabase.co")
     print("=" * 60)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v4 (API Publica)")
-    parser.add_argument("--max", type=int, default=15, help="Maximo de productos a analizar")
-    parser.add_argument("--country", default="CO", help="Codigo de pais (CO, MX, EC)")
-    parser.add_argument("--no-ai", action="store_true", help="Desactivar analisis con Claude")
+    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v5")
+    parser.add_argument("--ids", help="IDs de productos separados por coma (ej: 1645891,2017300)")
+    parser.add_argument("--file", help="Archivo con IDs (uno por linea)")
+    parser.add_argument("--country", default="CO", help="Pais (CO, MX, EC)")
+    parser.add_argument("--no-ai", action="store_true", help="Sin analisis Claude")
     args = parser.parse_args()
     
     if not SUPABASE_KEY:
         print("ERROR: Falta SUPABASE_KEY en .env")
         sys.exit(1)
     
-    run_pipeline(args.max, args.country, not args.no_ai)
+    # Obtener IDs
+    product_ids = []
+    
+    if args.ids:
+        product_ids = [id.strip() for id in args.ids.split(",") if id.strip()]
+    elif args.file and os.path.exists(args.file):
+        with open(args.file, "r") as f:
+            product_ids = [line.strip() for line in f if line.strip()]
+    elif os.path.exists("product_ids.txt"):
+        with open("product_ids.txt", "r") as f:
+            product_ids = [line.strip() for line in f if line.strip()]
+    
+    if not product_ids:
+        print("=" * 60)
+        print("  ESTRATEGAS IA - Pipeline v5")
+        print("=" * 60)
+        print("\n  Por favor proporciona IDs de productos de Dropi:")
+        print("\n  Opcion 1: Por linea de comandos")
+        print("    python run_simple.py --ids 1645891,2017300,1390113")
+        print("\n  Opcion 2: Crear archivo product_ids.txt")
+        print("    Pon un ID por linea y ejecuta:")
+        print("    python run_simple.py")
+        print("\n  Como obtener IDs:")
+        print("    1. Ve a app.dropi.co")
+        print("    2. Abre un producto del catalogo")
+        print("    3. El ID esta en la URL: dropi.co/products/[ID]")
+        print("=" * 60)
+        return
+    
+    run_pipeline(product_ids, args.country, not args.no_ai)
 
 
 if __name__ == "__main__":
