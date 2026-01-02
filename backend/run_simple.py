@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Pipeline Estrategas IA Tools - v7.2
-Precio de venta corregido para dropshipping COD Colombia
+Pipeline Estrategas IA Tools - v7.3
+- Stock: Si hay ventas recientes, asumimos que hay stock disponible
+- Criterios de recomendación ajustados
 """
 
 import os
@@ -40,8 +41,6 @@ class SupabaseSimple:
 
 # ============== DROPKILLER PUBLIC API ==============
 class DropKillerPublicAPI:
-    """API pública - NO requiere autenticación"""
-    
     BASE_URL = "https://extension-api.dropkiller.com"
     
     def __init__(self):
@@ -52,7 +51,6 @@ class DropKillerPublicAPI:
         })
     
     def get_history(self, product_ids: List[str], country: str = "CO") -> List[Dict]:
-        """Obtiene historial de ventas"""
         if not product_ids:
             return []
         
@@ -79,36 +77,19 @@ class DropKillerPublicAPI:
         
         return all_results
 
-# ============== MARGIN CALCULATOR (CORREGIDO) ==============
+# ============== MARGIN CALCULATOR ==============
 def calculate_margin(cost_price: int) -> Dict:
-    """
-    Calcula margen REAL para dropshipping COD Colombia
+    shipping = 18000
+    cpa = 25000
+    effective_rate = 0.63
+    return_shipping_cost = shipping * 0.22 * 0.5
     
-    El precio de venta típico es 2.5x-3.5x el costo del proveedor
-    Usamos el precio que genera al menos 15% ROI
-    """
-    shipping = 18000      # Envío COD
-    cpa = 25000           # CPA promedio Meta Ads
-    return_rate = 0.22    # 22% devoluciones
-    cancel_rate = 0.15    # 15% cancelaciones
-    
-    effective_rate = 1 - return_rate - cancel_rate  # 63%
-    return_shipping_cost = shipping * return_rate * 0.5  # Costo parcial de envío en devoluciones
-    
-    # Costo total fijo
     fixed_costs = shipping + cpa + return_shipping_cost
     total_cost = cost_price + fixed_costs
-    
-    # Calcular precio mínimo para breakeven
     breakeven_price = int(total_cost / effective_rate)
-    
-    # Precio óptimo = breakeven + 30% margen
     optimal_price = int(breakeven_price * 1.30)
-    
-    # Redondear a precio "bonito" (terminado en 900)
     optimal_price = ((optimal_price // 1000) * 1000) + 900
     
-    # Calcular margen con precio óptimo
     effective_revenue = optimal_price * effective_rate
     net_margin = effective_revenue - total_cost
     roi = (net_margin / total_cost) * 100 if total_cost > 0 else 0
@@ -133,38 +114,45 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     total_sales = sum(d.get("soldUnits", 0) for d in history)
     recent_sales = sum(d.get("soldUnits", 0) for d in history[-7:]) if len(history) >= 7 else total_sales
     
-    # 1. Ventas (35 pts)
+    # Stock: si hay ventas recientes, hay stock (la API a veces reporta 0 incorrectamente)
+    reported_stock = history[-1].get("stock", 0) if history else 0
+    estimated_stock = max(reported_stock, recent_sales * 2) if recent_sales > 0 else reported_stock
+    
+    # 1. Ventas (40 pts) - MÁS PESO
     if recent_sales >= 100:
+        score += 40
+        reasons.append(f"🔥 Ventas excelentes: {recent_sales}/7d")
+    elif recent_sales >= 50:
         score += 35
         reasons.append(f"🔥 Ventas muy altas: {recent_sales}/7d")
-    elif recent_sales >= 50:
-        score += 30
+    elif recent_sales >= 30:
+        score += 28
         reasons.append(f"Ventas altas: {recent_sales}/7d")
-    elif recent_sales >= 20:
-        score += 22
+    elif recent_sales >= 15:
+        score += 20
         reasons.append(f"Ventas buenas: {recent_sales}/7d")
-    elif recent_sales >= 10:
-        score += 15
+    elif recent_sales >= 5:
+        score += 12
         reasons.append(f"Ventas moderadas: {recent_sales}/7d")
-    elif recent_sales >= 3:
-        score += 8
+    elif recent_sales >= 1:
+        score += 5
         reasons.append(f"Pocas ventas: {recent_sales}/7d")
     else:
-        reasons.append(f"Sin ventas: {recent_sales}/7d")
+        reasons.append(f"Sin ventas recientes")
     
-    # 2. ROI (30 pts) - Ahora con precio óptimo
+    # 2. ROI (25 pts)
     roi = margin.get("roi", 0)
     if roi >= 25:
-        score += 30
+        score += 25
         reasons.append(f"ROI excelente: {roi}%")
     elif roi >= 15:
-        score += 22
+        score += 18
         reasons.append(f"ROI bueno: {roi}%")
     elif roi >= 10:
-        score += 15
+        score += 12
         reasons.append(f"ROI aceptable: {roi}%")
     elif roi > 0:
-        score += 8
+        score += 5
         reasons.append(f"ROI bajo: {roi}%")
     else:
         reasons.append(f"ROI negativo: {roi}%")
@@ -186,34 +174,30 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
         score += 10
         reasons.append("Historial corto")
     
-    # 4. Stock (15 pts)
-    stock = history[-1].get("stock", 0) if history else 0
-    if stock >= 100:
+    # 4. Stock (15 pts) - Usar stock estimado
+    if estimated_stock >= 50:
         score += 15
-        reasons.append(f"Stock disponible: {stock}")
-    elif stock >= 50:
-        score += 12
-        reasons.append(f"Stock OK: {stock}")
-    elif stock >= 20:
-        score += 8
-        reasons.append(f"Stock bajo: {stock}")
-    elif stock > 0:
-        score += 3
-        reasons.append(f"⚠️ Stock crítico: {stock}")
+        reasons.append(f"Stock OK (estimado: {estimated_stock})")
+    elif estimated_stock >= 20:
+        score += 10
+        reasons.append(f"Stock moderado")
+    elif estimated_stock > 0 or recent_sales > 0:
+        score += 5
+        reasons.append(f"Stock disponible")
     else:
-        reasons.append("❌ Sin stock")
+        reasons.append("⚠️ Sin stock confirmado")
     
     # Veredicto
-    if score >= 75:
+    if score >= 70:
         verdict = "EXCELENTE"
-    elif score >= 55:
+    elif score >= 50:
         verdict = "VIABLE"
-    elif score >= 35:
+    elif score >= 30:
         verdict = "ARRIESGADO"
     else:
         verdict = "NO_RECOMENDADO"
     
-    return score, reasons, verdict, total_sales, recent_sales
+    return score, reasons, verdict, total_sales, recent_sales, estimated_stock
 
 # ============== CLAUDE ANALYZER ==============
 def analyze_with_claude(product: Dict, margin: Dict, api_key: str) -> Dict:
@@ -225,13 +209,12 @@ def analyze_with_claude(product: Dict, margin: Dict, api_key: str) -> Dict:
 Producto: {product.get('name', 'N/A')}
 Costo proveedor: ${margin['cost_price']:,} COP
 Precio óptimo de venta: ${margin['optimal_price']:,} COP (multiplicador {margin['multiplier']}x)
-Margen neto estimado: ${margin['net_margin']:,} COP
+Margen neto estimado: ${margin['net_margin']:,} COP por venta
 ROI estimado: {margin['roi']}%
 Ventas últimos 7 días: {product.get('recent_sales', 0)} unidades
-Stock actual: {product.get('current_stock', 0)} unidades
 
 Responde SOLO en JSON válido:
-{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2", "angulo3"], "key_insight": "una oración corta con el insight principal"}}"""
+{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2", "angulo3"], "key_insight": "una oración corta"}}"""
 
     try:
         response = requests.post(
@@ -253,7 +236,7 @@ Responde SOLO en JSON válido:
 # ============== MAIN PIPELINE ==============
 def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = True):
     print("=" * 65)
-    print("  ESTRATEGAS IA - Pipeline v7.2 (Precios Optimizados)")
+    print("  ESTRATEGAS IA - Pipeline v7.3")
     print("=" * 65)
     
     if not product_ids:
@@ -285,40 +268,34 @@ def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = Tru
         ext_id = product.get("externalId", "")
         name = (product.get("name") or "Sin nombre")[:45]
         history = product.get("history", [])
-        current_stock = history[-1].get("stock", 0) if history else 0
         
         print(f"  [{i}/{len(products_with_data)}] {name}")
         
         cost = product.get("salePrice", 35000)
-        
-        # Calcular margen con precio óptimo
         margin = calculate_margin(cost)
         
-        print(f"      Costo: ${cost:,} → Precio óptimo: ${margin['optimal_price']:,} ({margin['multiplier']}x)")
+        print(f"      Costo: ${cost:,} → Venta: ${margin['optimal_price']:,} ({margin['multiplier']}x)")
         print(f"      Margen: ${margin['net_margin']:,} | ROI: {margin['roi']}%")
         
-        # Viabilidad
-        product["current_stock"] = current_stock
-        score, reasons, verdict, total_sales, recent_sales = calculate_viability(product, margin)
+        score, reasons, verdict, total_sales, recent_sales, estimated_stock = calculate_viability(product, margin)
         
-        print(f"      Ventas 7d: {recent_sales} | Stock: {current_stock}")
+        print(f"      Ventas 7d: {recent_sales} | Stock est: {estimated_stock}")
         print(f"      Score: {score}/100 → {verdict}")
         
         stats["analyzed"] += 1
         
         # IA
         ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
-        if use_ai and ANTHROPIC_API_KEY and score >= 35:
+        if use_ai and ANTHROPIC_API_KEY and score >= 30 and recent_sales >= 3:
             product["recent_sales"] = recent_sales
             ai_result = analyze_with_claude(product, margin, ANTHROPIC_API_KEY)
-            print(f"      IA: {ai_result.get('recommendation')} (confianza: {ai_result.get('confidence', 'N/A')})")
+            print(f"      IA: {ai_result.get('recommendation')} (conf: {ai_result.get('confidence', 'N/A')})")
         
-        # ¿Recomendar?
+        # ¿Recomendar? - CRITERIOS AJUSTADOS
         is_recommended = (
             score >= 50 and 
-            margin["roi"] >= 10 and 
-            recent_sales >= 5 and
-            current_stock >= 10 and
+            margin["roi"] >= 15 and 
+            recent_sales >= 10 and  # Al menos 10 ventas en 7 días
             ai_result.get("recommendation") != "NO_VENDER"
         )
         
@@ -347,7 +324,7 @@ def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = Tru
                 trend_pct = ((second - first) / first) * 100
                 trend_direction = "UP" if trend_pct > 15 else ("DOWN" if trend_pct < -15 else "STABLE")
         
-        # Guardar en Supabase
+        # Guardar
         data = {
             "external_id": ext_id,
             "platform": "dropi",
@@ -359,7 +336,7 @@ def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = Tru
             "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
             "sales_7d": recent_sales,
             "sales_30d": total_sales,
-            "current_stock": current_stock,
+            "current_stock": estimated_stock,
             "real_margin": margin["net_margin"],
             "roi": margin["roi"],
             "breakeven_price": margin["breakeven_price"],
@@ -388,14 +365,16 @@ def run_pipeline(product_ids: List[str], country: str = "CO", use_ai: bool = Tru
         print(f"\n  🏆 TOP PRODUCTOS RECOMENDADOS:")
         for p in sorted(recommended_products, key=lambda x: x["score"], reverse=True)[:5]:
             print(f"     • {p['name'][:35]}")
-            print(f"       Ventas: {p['sales_7d']}/7d | Precio: ${p['price']:,} | ROI: {p['roi']}%")
+            print(f"       Ventas: {p['sales_7d']}/7d | Precio: ${p['price']:,} | Margen: ${p['margin']:,}")
     
+    print("=" * 65)
+    print("\n  ✓ Datos guardados en Supabase")
     print("=" * 65)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v7.2")
-    parser.add_argument("--ids", required=True, help="IDs de productos separados por coma")
+    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v7.3")
+    parser.add_argument("--ids", required=True, help="IDs separados por coma")
     parser.add_argument("--country", default="CO", help="Pais (CO, MX, EC)")
     parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     args = parser.parse_args()
@@ -405,7 +384,6 @@ def main():
         sys.exit(1)
     
     product_ids = [id.strip() for id in args.ids.split(",") if id.strip()]
-    
     run_pipeline(product_ids, args.country, not args.no_ai)
 
 
