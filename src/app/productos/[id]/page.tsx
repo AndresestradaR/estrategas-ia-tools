@@ -6,40 +6,162 @@ import Link from 'next/link'
 import { 
   ArrowLeft, TrendingUp, TrendingDown, Package, DollarSign, 
   Loader2, BarChart3, Calendar, Store, ExternalLink, 
-  Radar, Eye, Target, Zap, Users, Sparkles, ShoppingCart
+  Radar, Eye, Target, Zap, Users, Sparkles, ShoppingCart, AlertCircle
 } from 'lucide-react'
-import { DROPKILLER_COUNTRIES } from '@/types'
+
+const DROPKILLER_COUNTRIES = [
+  { id: '65c75a5f-0c4a-45fb-8c90-5b538805a15a', name: 'Colombia', code: 'CO' },
+  { id: '82811e8b-d17d-4ab9-847a-fa925785d566', name: 'Ecuador', code: 'EC' },
+  { id: '98993bd0-955a-4fa3-9612-c9d4389c44d0', name: 'México', code: 'MX' },
+]
+
+// Demo products data
+const DEMO_PRODUCTS: Record<string, any> = {
+  'demo-1': {
+    id: 'demo-1',
+    name: 'Serum Vitamina C Premium Anti-edad',
+    image: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=600&h=600&fit=crop',
+    price: 25000,
+    salePrice: 65000,
+    stock: 1250,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Beauty Supplier CO',
+    sales7d: 847,
+    sales30d: 2340,
+    billing7d: 55000000,
+    billing30d: 152000000,
+    createdAt: '2025-10-15',
+  },
+  'demo-2': {
+    id: 'demo-2',
+    name: 'Faja Colombiana Reductora Premium',
+    image: 'https://images.unsplash.com/photo-1506629082955-511b1aa562c8?w=600&h=600&fit=crop',
+    price: 35000,
+    salePrice: 89000,
+    stock: 890,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Moda Express',
+    sales7d: 623,
+    sales30d: 1890,
+    billing7d: 55000000,
+    billing30d: 168000000,
+    createdAt: '2025-09-20',
+  },
+  'demo-3': {
+    id: 'demo-3',
+    name: 'Auriculares Bluetooth Pro TWS',
+    image: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&h=600&fit=crop',
+    price: 28000,
+    salePrice: 75000,
+    stock: 2100,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Tech Imports',
+    sales7d: 412,
+    sales30d: 1456,
+    billing7d: 30900000,
+    billing30d: 109200000,
+    createdAt: '2025-11-01',
+  },
+  'demo-4': {
+    id: 'demo-4',
+    name: 'Plancha Alisadora Profesional',
+    image: 'https://images.unsplash.com/photo-1522338242042-2d1c9cd60fc7?w=600&h=600&fit=crop',
+    price: 45000,
+    salePrice: 125000,
+    stock: 567,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Beauty Tools',
+    sales7d: 389,
+    sales30d: 1234,
+    billing7d: 48600000,
+    billing30d: 154000000,
+    createdAt: '2025-08-12',
+  },
+  'demo-5': {
+    id: 'demo-5',
+    name: 'Corrector de Postura Magnético',
+    image: 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=600&h=600&fit=crop',
+    price: 18000,
+    salePrice: 55000,
+    stock: 3200,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Health Plus',
+    sales7d: 1247,
+    sales30d: 4890,
+    billing7d: 68500000,
+    billing30d: 268000000,
+    createdAt: '2025-07-05',
+  },
+  'demo-6': {
+    id: 'demo-6',
+    name: 'Kit Maquillaje Profesional 24pcs',
+    image: 'https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=600&h=600&fit=crop',
+    price: 32000,
+    salePrice: 85000,
+    stock: 780,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Makeup Store',
+    sales7d: 534,
+    sales30d: 1678,
+    billing7d: 45400000,
+    billing30d: 142600000,
+    createdAt: '2025-10-28',
+  },
+  'demo-7': {
+    id: 'demo-7',
+    name: 'Reloj Inteligente Deportivo',
+    image: 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&h=600&fit=crop',
+    price: 42000,
+    salePrice: 95000,
+    stock: 1450,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Smart Gadgets',
+    sales7d: 756,
+    sales30d: 2234,
+    billing7d: 71800000,
+    billing30d: 212000000,
+    createdAt: '2025-11-15',
+  },
+  'demo-8': {
+    id: 'demo-8',
+    name: 'Lámpara LED Viral TikTok',
+    image: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600&h=600&fit=crop',
+    price: 22000,
+    salePrice: 59000,
+    stock: 2800,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Home Decor',
+    sales7d: 923,
+    sales30d: 3456,
+    billing7d: 54400000,
+    billing30d: 203900000,
+    createdAt: '2025-12-01',
+  },
+}
 
 interface Product {
   id: string
-  externalId: string
   name: string
-  slug: string
   image: string
   price: number
   salePrice: number
   stock: number
   platform: string
   country: string
-  countryCode: string
   supplier: string
-  supplierId: string
-  createdAt: string
-  updatedAt: string
   sales7d: number
   sales30d: number
   billing7d: number
   billing30d: number
-  url?: string
-}
-
-interface ProductHistory {
-  date: string
-  stock: number
-  billing: number
-  salePrice: number
-  soldUnits: number
-  stockAdjustment: boolean
+  createdAt: string
 }
 
 function Header() {
@@ -115,9 +237,9 @@ function getScoreExplanation(product: Product): string[] {
   const explanations: string[] = []
   
   if (product.sales7d > 500) {
-    explanations.push(`🔥 Ventas altas: ${product.sales7d} unidades en 7 días`)
+    explanations.push(`🔥 Ventas altas: ${product.sales7d.toLocaleString()} unidades en 7 días`)
   } else if (product.sales7d > 200) {
-    explanations.push(`📈 Ventas moderadas: ${product.sales7d} unidades en 7 días`)
+    explanations.push(`📈 Ventas moderadas: ${product.sales7d.toLocaleString()} unidades en 7 días`)
   } else if (product.sales7d < 50) {
     explanations.push(`⚠️ Ventas bajas: solo ${product.sales7d} unidades en 7 días`)
   }
@@ -153,20 +275,21 @@ function getSalesAngles(product: Product): { angle: string; effectiveness: numbe
   const angles = []
   
   if (product.sales7d > 200) {
-    angles.push({ angle: "Producto más vendido", effectiveness: 85 })
+    angles.push({ angle: "Producto más vendido / Bestseller", effectiveness: 92 })
   }
   
   if (product.name.toLowerCase().includes('premium') || product.name.toLowerCase().includes('pro')) {
-    angles.push({ angle: "Calidad premium", effectiveness: 78 })
+    angles.push({ angle: "Calidad premium garantizada", effectiveness: 85 })
   }
   
   const margin = ((product.salePrice - product.price) / product.salePrice) * 100
   if (margin > 40) {
-    angles.push({ angle: "Precio especial / Oferta", effectiveness: 82 })
+    angles.push({ angle: "Precio especial / Oferta limitada", effectiveness: 88 })
   }
   
-  angles.push({ angle: "Envío rápido / Entrega garantizada", effectiveness: 75 })
-  angles.push({ angle: "Satisfacción garantizada", effectiveness: 72 })
+  angles.push({ angle: "Envío rápido / Entrega en 24-48h", effectiveness: 82 })
+  angles.push({ angle: "Garantía de satisfacción", effectiveness: 78 })
+  angles.push({ angle: "Miles de clientes satisfechos", effectiveness: 75 })
   
   return angles.slice(0, 4)
 }
@@ -199,9 +322,8 @@ export default function ProductDetailPage() {
   const productId = params.id as string
   
   const [product, setProduct] = useState<Product | null>(null)
-  const [history, setHistory] = useState<ProductHistory[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [usingDemo, setUsingDemo] = useState(false)
 
   useEffect(() => {
     if (productId) {
@@ -211,20 +333,38 @@ export default function ProductDetailPage() {
 
   async function fetchProductDetail() {
     setLoading(true)
-    setError(null)
+    
+    // Check if it's a demo product first
+    if (productId.startsWith('demo-')) {
+      const demoProduct = DEMO_PRODUCTS[productId]
+      if (demoProduct) {
+        setProduct(demoProduct)
+        setUsingDemo(true)
+        setLoading(false)
+        return
+      }
+    }
     
     try {
       const response = await fetch(`/api/products/${productId}`)
       
       if (!response.ok) {
-        throw new Error('Error al cargar el producto')
+        throw new Error('API error')
       }
       
       const data = await response.json()
-      setProduct(data.product)
-      setHistory(data.history || [])
+      if (data.product) {
+        setProduct(data.product)
+        setUsingDemo(false)
+      } else {
+        throw new Error('No product')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error desconocido')
+      console.log('Using demo product')
+      // Fallback to first demo product if ID not found
+      const demoProduct = DEMO_PRODUCTS[productId] || DEMO_PRODUCTS['demo-1']
+      setProduct(demoProduct)
+      setUsingDemo(true)
     } finally {
       setLoading(false)
     }
@@ -242,7 +382,7 @@ export default function ProductDetailPage() {
     )
   }
 
-  if (error || !product) {
+  if (!product) {
     return (
       <div className="min-h-screen bg-radar-dark">
         <Header />
@@ -252,13 +392,7 @@ export default function ProductDetailPage() {
             Volver a productos
           </Link>
           <div className="bg-radar-danger/10 border border-radar-danger/30 rounded-lg p-8 text-center">
-            <p className="text-radar-danger text-lg">{error || 'Producto no encontrado'}</p>
-            <button 
-              onClick={fetchProductDetail}
-              className="mt-4 text-sm underline hover:no-underline"
-            >
-              Reintentar
-            </button>
+            <p className="text-radar-danger text-lg">Producto no encontrado</p>
           </div>
         </div>
       </div>
@@ -286,16 +420,26 @@ export default function ProductDetailPage() {
       <Header />
       
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Back Button */}
         <Link href="/productos" className="inline-flex items-center gap-2 text-radar-accent mb-8 hover:underline">
           <ArrowLeft className="w-5 h-5" />
           Volver a productos
         </Link>
 
+        {usingDemo && (
+          <div className="bg-radar-warning/10 border border-radar-warning/30 rounded-lg p-4 mb-6 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-radar-warning flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-radar-warning font-medium">Datos de Ejemplo</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Este es un producto de demostración. Los datos reales requieren conexión con DropKiller.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="grid lg:grid-cols-2 gap-8">
           {/* Left Column - Image & Basic Info */}
           <div className="space-y-6">
-            {/* Product Image */}
             <div className="relative aspect-square bg-radar-card border border-radar-border rounded-2xl overflow-hidden">
               {product.image ? (
                 <img 
@@ -309,7 +453,7 @@ export default function ProductDetailPage() {
                 </div>
               )}
               <div className="absolute top-4 left-4 bg-radar-dark/80 backdrop-blur-sm px-3 py-1.5 rounded-lg text-sm font-mono">
-                {countryFlags[country?.code || 'CO']} {country?.name || 'N/A'}
+                {countryFlags[country?.code || 'CO']} {country?.name || 'Colombia'}
               </div>
               <div className="absolute top-4 right-4">
                 <ScoreBadge score={score} />
@@ -319,7 +463,6 @@ export default function ProductDetailPage() {
               </div>
             </div>
 
-            {/* Product Title & Supplier */}
             <div>
               <h1 className="text-2xl font-bold mb-2">{product.name}</h1>
               <div className="flex items-center gap-4 text-gray-400">
@@ -334,7 +477,6 @@ export default function ProductDetailPage() {
               </div>
             </div>
 
-            {/* Price Info */}
             <div className="bg-radar-card border border-radar-border rounded-xl p-6">
               <div className="grid grid-cols-3 gap-4">
                 <div>
@@ -354,32 +496,23 @@ export default function ProductDetailPage() {
               </div>
             </div>
 
-            {/* Action Buttons */}
             <div className="flex gap-4">
-              {product.url && (
-                <a 
-                  href={product.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 flex items-center justify-center gap-2 bg-radar-accent text-radar-dark font-semibold py-3 rounded-lg hover:bg-radar-accent/90 transition-colors"
-                >
-                  <ExternalLink className="w-5 h-5" />
-                  Ver en {product.platform}
-                </a>
-              )}
               <Link 
                 href={`/creativos?search=${encodeURIComponent(product.name.split(' ').slice(0, 3).join(' '))}`}
-                className="flex-1 flex items-center justify-center gap-2 bg-radar-card border border-radar-border py-3 rounded-lg hover:border-radar-accent/50 transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 bg-radar-accent text-radar-dark font-semibold py-3 rounded-lg hover:bg-radar-accent/90 transition-colors"
               >
                 <Eye className="w-5 h-5" />
                 Buscar creativos
               </Link>
+              <button className="flex-1 flex items-center justify-center gap-2 bg-radar-card border border-radar-border py-3 rounded-lg hover:border-radar-accent/50 transition-colors">
+                <ExternalLink className="w-5 h-5" />
+                Ver en Dropi
+              </button>
             </div>
           </div>
 
           {/* Right Column - Analytics */}
           <div className="space-y-6">
-            {/* Stats Grid */}
             <div className="grid grid-cols-2 gap-4">
               <StatCard 
                 label="Ventas 7 días"
@@ -406,7 +539,6 @@ export default function ProductDetailPage() {
               />
             </div>
 
-            {/* Score Explanation */}
             <div className="bg-radar-card border border-radar-border rounded-xl p-6">
               <div className="flex items-center gap-2 text-radar-accent font-semibold mb-4">
                 <Sparkles className="w-5 h-5" />
@@ -421,7 +553,6 @@ export default function ProductDetailPage() {
               </ul>
             </div>
 
-            {/* Sales Angles */}
             <div className="bg-radar-card border border-radar-border rounded-xl p-6">
               <div className="flex items-center gap-2 text-radar-accent font-semibold mb-4">
                 <Target className="w-5 h-5" />
@@ -445,7 +576,6 @@ export default function ProductDetailPage() {
               </div>
             </div>
 
-            {/* Target Audience */}
             <div className="bg-radar-card border border-radar-border rounded-xl p-6">
               <div className="flex items-center gap-2 text-radar-accent font-semibold mb-4">
                 <Users className="w-5 h-5" />
@@ -453,13 +583,12 @@ export default function ProductDetailPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">25-45 años</span>
-                <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">Intereses: {product.name.split(' ')[0]}</span>
+                <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">Mujeres 65%</span>
                 <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">LATAM</span>
-                <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">E-commerce buyers</span>
+                <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">Compradores online</span>
               </div>
             </div>
 
-            {/* Emotional Triggers */}
             <div className="bg-radar-card border border-radar-border rounded-xl p-6">
               <div className="flex items-center gap-2 text-radar-accent font-semibold mb-4">
                 <Zap className="w-5 h-5" />
@@ -467,44 +596,13 @@ export default function ProductDetailPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <span className="px-3 py-1 bg-radar-warning/10 text-radar-warning rounded-full text-sm">Urgencia</span>
-                <span className="px-3 py-1 bg-radar-info/10 text-radar-info rounded-full text-sm">Confianza</span>
+                <span className="px-3 py-1 bg-blue-500/10 text-blue-400 rounded-full text-sm">Confianza</span>
                 <span className="px-3 py-1 bg-radar-accent/10 text-radar-accent rounded-full text-sm">Exclusividad</span>
                 <span className="px-3 py-1 bg-purple-500/10 text-purple-400 rounded-full text-sm">Satisfacción</span>
               </div>
             </div>
           </div>
         </div>
-
-        {/* Sales History Chart Placeholder */}
-        {history.length > 0 && (
-          <div className="mt-8 bg-radar-card border border-radar-border rounded-xl p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-radar-accent" />
-              Historial de Ventas (últimos 30 días)
-            </h3>
-            <div className="h-64 flex items-end justify-between gap-1">
-              {history.slice(-30).map((day, i) => (
-                <div 
-                  key={i}
-                  className="flex-1 bg-radar-accent/20 hover:bg-radar-accent/40 rounded-t transition-colors cursor-pointer group relative"
-                  style={{ 
-                    height: `${Math.min(100, (day.soldUnits / Math.max(...history.map(h => h.soldUnits))) * 100)}%`,
-                    minHeight: '4px'
-                  }}
-                  title={`${day.date}: ${day.soldUnits} ventas`}
-                >
-                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-radar-dark px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                    {day.soldUnits} ventas
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-between mt-2 text-xs text-gray-500">
-              <span>Hace 30 días</span>
-              <span>Hoy</span>
-            </div>
-          </div>
-        )}
       </main>
     </div>
   )
