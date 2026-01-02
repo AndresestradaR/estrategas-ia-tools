@@ -3,51 +3,144 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { 
-  Search, Filter, Play, Heart, MessageCircle, Share2, Eye,
+  Search, Play, Heart, MessageCircle, Share2, Eye,
   ChevronLeft, ChevronRight, Loader2, X, SlidersHorizontal,
-  Radar, Package, Globe, Clock, ExternalLink, Download, Sparkles
+  Radar, Package, Globe, Clock, Sparkles, AlertCircle
 } from 'lucide-react'
-import { ADSKILLER_COUNTRIES } from '@/types'
+
+const ADSKILLER_COUNTRIES = [
+  { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  { id: '40334494-86fc-4fc0-857a-281816247906', name: 'México', code: 'MX' },
+  { id: '1be5939b-f5b1-41ea-8546-fc72a7381c9d', name: 'Ecuador', code: 'EC' },
+  { id: '8e7e6e88-2a90-4a8d-b6eb-ed0975c1df59', name: 'Perú', code: 'PE' },
+  { id: 'bed193de-9cda-47b7-ab21-fc4abde86bd1', name: 'Chile', code: 'CL' },
+  { id: 'e8a05443-3d9c-4a24-93f0-1d197923d1fe', name: 'Argentina', code: 'AR' },
+  { id: 'de1f3f37-ed5f-4335-b151-974932bcbd83', name: 'Bolivia', code: 'BO' },
+  { id: '3a44b739-d1c1-4fc5-8742-ae691d09c434', name: 'Costa Rica', code: 'CR' },
+  { id: '2361e5ee-f992-476c-a380-2a157e384a60', name: 'España', code: 'ES' },
+]
+
+const DEMO_ADS = [
+  {
+    id: 'demo-ad-1',
+    page_name: 'Beauty Store CO',
+    company_name: 'Beauty Imports SAS',
+    title: '✨ El sérum que está revolucionando el cuidado de la piel en Colombia',
+    description: '🔥 OFERTA ESPECIAL: 50% OFF solo por hoy\n\n✅ Vitamina C pura\n✅ Resultados en 7 días\n✅ Envío gratis\n\n👇 Haz clic en "Comprar ahora"',
+    likes: 12500,
+    comments: 890,
+    shares: 2340,
+    views: 458000,
+    active_time: 1209600,
+    cta: 'Comprar ahora',
+    platforms: ['facebook', 'instagram'],
+    images: ['https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  },
+  {
+    id: 'demo-ad-2',
+    page_name: 'FajasColombia',
+    company_name: 'Moda Latina',
+    title: '👙 La faja #1 en ventas que moldea tu figura al instante',
+    description: '💪 Reduce hasta 3 tallas\n🎯 Postparto y uso diario\n📦 Envío discreto\n\n¡Miles de mujeres ya la tienen!',
+    likes: 8900,
+    comments: 1250,
+    shares: 3100,
+    views: 320000,
+    active_time: 2592000,
+    cta: 'Ver más',
+    platforms: ['facebook'],
+    images: ['https://images.unsplash.com/photo-1506629082955-511b1aa562c8?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  },
+  {
+    id: 'demo-ad-3',
+    page_name: 'TechGadgets MX',
+    company_name: 'Importaciones Tech',
+    title: '🎧 Audífonos Bluetooth que los influencers no quieren que conozcas',
+    description: '⚡ 40 horas de batería\n🔊 Sonido HD\n💧 Resistente al agua\n\n🔥 Precio especial de lanzamiento',
+    likes: 15600,
+    comments: 2100,
+    shares: 4500,
+    views: 890000,
+    active_time: 604800,
+    cta: 'Comprar',
+    platforms: ['facebook', 'instagram'],
+    images: ['https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '40334494-86fc-4fc0-857a-281816247906', name: 'México', code: 'MX' },
+  },
+  {
+    id: 'demo-ad-4',
+    page_name: 'Belleza Express',
+    company_name: 'Beauty Tools CO',
+    title: '💇‍♀️ Plancha profesional con tecnología de salón',
+    description: '✨ Cerámica tourmalina\n🌡️ Control de temperatura\n⚡ Calienta en 30 segundos\n\n👩‍🦰 Perfecta para todo tipo de cabello',
+    likes: 6700,
+    comments: 450,
+    shares: 1200,
+    views: 210000,
+    active_time: 1814400,
+    cta: 'Obtener oferta',
+    platforms: ['instagram'],
+    images: ['https://images.unsplash.com/photo-1522338242042-2d1c9cd60fc7?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  },
+  {
+    id: 'demo-ad-5',
+    page_name: 'Salud y Bienestar',
+    company_name: 'Health Plus SAS',
+    title: '🧘 Corrector de postura que alivia el dolor de espalda',
+    description: '✅ Usado por fisioterapeutas\n✅ Resultados desde el día 1\n✅ Discreto bajo la ropa\n\n🎁 ENVÍO GRATIS hoy',
+    likes: 23400,
+    comments: 3200,
+    shares: 8900,
+    views: 1250000,
+    active_time: 3456000,
+    cta: 'Comprar ahora',
+    platforms: ['facebook', 'instagram'],
+    images: ['https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  },
+  {
+    id: 'demo-ad-6',
+    page_name: 'Makeup Paradise',
+    company_name: 'Cosméticos Express',
+    title: '💄 Kit de maquillaje profesional - 24 piezas',
+    description: '🎨 Todo lo que necesitas en un solo kit\n💰 Ahorra más de $200.000\n📦 Estuche premium incluido\n\n⏰ Últimas unidades',
+    likes: 9800,
+    comments: 780,
+    shares: 2100,
+    views: 380000,
+    active_time: 1296000,
+    cta: 'Ver más',
+    platforms: ['facebook'],
+    images: ['https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=600&h=400&fit=crop'],
+    videos: [],
+    country: { id: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', name: 'Colombia', code: 'CO' },
+  },
+]
 
 interface Ad {
   id: string
-  external_ad_id: string
-  creation_date: string
-  start_date: string
-  end_date: string
-  last_update: string
-  platforms: string[]
   page_name: string
   company_name: string
+  title: string
+  description: string
   likes: number
   comments: number
   shares: number
   views: number | null
   active_time: number
-  title: string
-  description: string
-  link: string
   cta: string
-  videos: string[]
+  platforms: string[]
   images: string[]
-  url: string
-  page_id: string
-  creative_id: string
-  country_id: string
-  enabled: boolean
-  country: {
-    id: string
-    name: string
-    code: string
-  }
-}
-
-interface AdsResponse {
-  ads: Ad[]
-  total: number
-  page: number
-  limit: number
-  totalPages: number
+  videos: string[]
+  country: { id: string; name: string; code: string }
 }
 
 function Header() {
@@ -56,9 +149,7 @@ function Header() {
       <div className="max-w-7xl mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
           <Link href="/" className="flex items-center gap-3">
-            <div className="relative">
-              <Radar className="w-10 h-10 text-radar-accent" />
-            </div>
+            <Radar className="w-10 h-10 text-radar-accent" />
             <div>
               <h1 className="text-xl font-bold gradient-text">Estrategas IA</h1>
               <p className="text-xs text-gray-500">by Trucos Ecomm & Drop</p>
@@ -87,11 +178,6 @@ function formatNumber(num: number): string {
   return num.toString()
 }
 
-function formatDate(dateString: string): string {
-  const date = new Date(dateString)
-  return date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
-}
-
 function AdCard({ ad }: { ad: Ad }) {
   const thumbnail = ad.images?.[0] || ad.videos?.[0] || ''
   const hasVideo = ad.videos && ad.videos.length > 0
@@ -100,14 +186,12 @@ function AdCard({ ad }: { ad: Ad }) {
   const countryFlags: Record<string, string> = {
     'CO': '🇨🇴', 'EC': '🇪🇨', 'MX': '🇲🇽', 'CL': '🇨🇱', 
     'ES': '🇪🇸', 'PE': '🇵🇪', 'PA': '🇵🇦', 'PY': '🇵🇾',
-    'AR': '🇦🇷', 'GT': '🇬🇹', 'BO': '🇧🇴', 'CR': '🇨🇷',
-    'UY': '🇺🇾', 'VE': '🇻🇪'
+    'AR': '🇦🇷', 'GT': '🇬🇹', 'BO': '🇧🇴', 'CR': '🇨🇷'
   }
 
   return (
     <Link href={`/creativos/${ad.id}`}>
       <div className="bg-radar-card border border-radar-border rounded-xl overflow-hidden transition-all duration-300 hover:border-radar-accent/50 hover:shadow-lg hover:shadow-radar-accent/10 cursor-pointer h-full">
-        {/* Thumbnail */}
         <div className="relative aspect-video bg-radar-dark overflow-hidden">
           {thumbnail ? (
             <img 
@@ -148,10 +232,9 @@ function AdCard({ ad }: { ad: Ad }) {
           )}
         </div>
 
-        {/* Content */}
         <div className="p-4 space-y-3">
           <div className="flex items-start gap-3">
-            <div className="w-10 h-10 bg-radar-border rounded-full flex items-center justify-center text-xs font-bold">
+            <div className="w-10 h-10 bg-radar-border rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">
               {ad.page_name?.substring(0, 2).toUpperCase() || 'AD'}
             </div>
             <div className="flex-1 min-w-0">
@@ -164,7 +247,6 @@ function AdCard({ ad }: { ad: Ad }) {
             <p className="text-sm text-gray-300 line-clamp-2">{ad.title}</p>
           )}
 
-          {/* Engagement Stats */}
           <div className="flex items-center gap-4 text-xs text-gray-400">
             <span className="flex items-center gap-1">
               <Heart className="w-3.5 h-3.5" />
@@ -186,7 +268,6 @@ function AdCard({ ad }: { ad: Ad }) {
             )}
           </div>
 
-          {/* CTA */}
           {ad.cta && (
             <div className="pt-2 border-t border-radar-border">
               <span className="inline-block px-3 py-1 bg-radar-dark text-xs rounded-full">
@@ -224,7 +305,6 @@ function FilterPanel({
       </div>
       
       <div className="p-4 space-y-6 overflow-y-auto h-[calc(100vh-60px)]">
-        {/* País */}
         <div>
           <label className="block text-sm font-medium mb-2">País</label>
           <select 
@@ -238,7 +318,6 @@ function FilterPanel({
           </select>
         </div>
 
-        {/* Plataforma */}
         <div>
           <label className="block text-sm font-medium mb-2">Plataforma</label>
           <select 
@@ -251,7 +330,6 @@ function FilterPanel({
           </select>
         </div>
 
-        {/* Ordenar */}
         <div>
           <label className="block text-sm font-medium mb-2">Ordenar por</label>
           <select 
@@ -267,7 +345,6 @@ function FilterPanel({
           </select>
         </div>
 
-        {/* Clear & Apply */}
         <div className="pt-4 border-t border-radar-border space-y-2">
           <button
             onClick={() => setFilters({ 
@@ -295,21 +372,18 @@ function FilterPanel({
 export default function CreativosPage() {
   const [ads, setAds] = useState<Ad[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [totalPages, setTotalPages] = useState(1)
-  const [total, setTotal] = useState(0)
+  const [usingDemo, setUsingDemo] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   
   const [filters, setFilters] = useState({
-    countryId: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47', // Colombia
+    countryId: '10ba518f-80f3-4b8e-b9ba-1a8b62d40c47',
     platform: 'facebook',
     search: '',
     sortBy: 'updated_at',
-    order: 'desc' as const,
     page: 1,
   })
 
-  const [searchInput, setSearchInput] = useState(filters.search)
+  const [searchInput, setSearchInput] = useState('')
 
   useEffect(() => {
     fetchAds()
@@ -317,7 +391,6 @@ export default function CreativosPage() {
 
   async function fetchAds() {
     setLoading(true)
-    setError(null)
     
     try {
       const params = new URLSearchParams()
@@ -330,16 +403,38 @@ export default function CreativosPage() {
       const response = await fetch(`/api/ads?${params.toString()}`)
       
       if (!response.ok) {
-        throw new Error('Error al cargar creativos')
+        throw new Error('API no disponible')
       }
       
-      const data: AdsResponse = await response.json()
-      setAds(data.ads || [])
-      setTotalPages(data.totalPages || 1)
-      setTotal(data.total || 0)
+      const data = await response.json()
+      
+      if (data.ads && data.ads.length > 0) {
+        setAds(data.ads)
+        setUsingDemo(false)
+      } else {
+        throw new Error('Sin creativos')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error desconocido')
-      setAds([])
+      console.log('Using demo ads:', err)
+      let filtered = [...DEMO_ADS]
+      
+      if (filters.search) {
+        filtered = filtered.filter(a => 
+          a.title.toLowerCase().includes(filters.search.toLowerCase()) ||
+          a.page_name.toLowerCase().includes(filters.search.toLowerCase())
+        )
+      }
+      
+      if (filters.sortBy === 'likes') {
+        filtered.sort((a, b) => b.likes - a.likes)
+      } else if (filters.sortBy === 'comments') {
+        filtered.sort((a, b) => b.comments - a.comments)
+      } else if (filters.sortBy === 'shares') {
+        filtered.sort((a, b) => b.shares - a.shares)
+      }
+      
+      setAds(filtered)
+      setUsingDemo(true)
     } finally {
       setLoading(false)
     }
@@ -350,11 +445,6 @@ export default function CreativosPage() {
     setFilters({ ...filters, search: searchInput, page: 1 })
   }
 
-  function handlePageChange(newPage: number) {
-    setFilters({ ...filters, page: newPage })
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
   const currentCountry = ADSKILLER_COUNTRIES.find(c => c.id === filters.countryId)
 
   return (
@@ -362,17 +452,28 @@ export default function CreativosPage() {
       <Header />
       
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Title & Stats */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2">
             🎬 Explorar <span className="gradient-text">Creativos</span>
           </h1>
           <p className="text-gray-400">
-            {total.toLocaleString()} anuncios encontrados en {currentCountry?.name || 'todos los países'}
+            {ads.length} anuncios {usingDemo ? '(datos demo)' : ''} en {currentCountry?.name || 'Colombia'}
           </p>
         </div>
 
-        {/* Search & Filters Bar */}
+        {usingDemo && (
+          <div className="bg-radar-warning/10 border border-radar-warning/30 rounded-lg p-4 mb-6 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-radar-warning flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-radar-warning font-medium">Modo Demo Activo</p>
+              <p className="text-sm text-gray-400 mt-1">
+                La API de Adskiller requiere autenticación activa. Estás viendo datos de ejemplo.
+                Para datos reales, asegúrate de tener una sesión válida en DropKiller.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col sm:flex-row gap-4 mb-8">
           <form onSubmit={handleSearch} className="flex-1 flex gap-2">
             <div className="relative flex-1">
@@ -402,7 +503,6 @@ export default function CreativosPage() {
           </button>
         </div>
 
-        {/* Quick Filters */}
         <div className="flex flex-wrap gap-2 mb-6">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-radar-accent/10 border border-radar-accent/30 rounded-full text-sm">
             <Globe className="w-4 h-4 text-radar-accent" />
@@ -418,20 +518,6 @@ export default function CreativosPage() {
           </div>
         </div>
 
-        {/* Error State */}
-        {error && (
-          <div className="bg-radar-danger/10 border border-radar-danger/30 rounded-lg p-4 mb-8">
-            <p className="text-radar-danger">{error}</p>
-            <button 
-              onClick={fetchAds}
-              className="mt-2 text-sm underline hover:no-underline"
-            >
-              Reintentar
-            </button>
-          </div>
-        )}
-
-        {/* Loading State */}
         {loading && (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-radar-accent animate-spin" />
@@ -439,44 +525,15 @@ export default function CreativosPage() {
           </div>
         )}
 
-        {/* Ads Grid */}
         {!loading && ads.length > 0 && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {ads.map((ad) => (
-                <AdCard key={ad.id} ad={ad} />
-              ))}
-            </div>
-
-            {/* Pagination */}
-            <div className="flex items-center justify-center gap-4 mt-8">
-              <button
-                onClick={() => handlePageChange(filters.page - 1)}
-                disabled={filters.page <= 1}
-                className="flex items-center gap-2 px-4 py-2 bg-radar-card border border-radar-border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:border-radar-accent/50 transition-colors"
-              >
-                <ChevronLeft className="w-5 h-5" />
-                Anterior
-              </button>
-              
-              <span className="text-gray-400">
-                Página {filters.page} de {totalPages}
-              </span>
-              
-              <button
-                onClick={() => handlePageChange(filters.page + 1)}
-                disabled={filters.page >= totalPages}
-                className="flex items-center gap-2 px-4 py-2 bg-radar-card border border-radar-border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:border-radar-accent/50 transition-colors"
-              >
-                Siguiente
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
-          </>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {ads.map((ad) => (
+              <AdCard key={ad.id} ad={ad} />
+            ))}
+          </div>
         )}
 
-        {/* Empty State */}
-        {!loading && ads.length === 0 && !error && (
+        {!loading && ads.length === 0 && (
           <div className="text-center py-20">
             <Eye className="w-16 h-16 text-gray-500 mx-auto mb-4" />
             <h3 className="text-xl font-semibold mb-2">No se encontraron creativos</h3>
@@ -485,7 +542,6 @@ export default function CreativosPage() {
         )}
       </main>
 
-      {/* Filter Panel */}
       <FilterPanel 
         filters={filters}
         setFilters={setFilters}
@@ -493,7 +549,6 @@ export default function CreativosPage() {
         onClose={() => setFilterOpen(false)}
       />
       
-      {/* Overlay */}
       {filterOpen && (
         <div 
           className="fixed inset-0 bg-black/50 z-40"
