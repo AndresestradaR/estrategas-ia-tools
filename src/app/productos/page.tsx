@@ -1,43 +1,167 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { 
   Search, Filter, TrendingUp, Package, DollarSign, 
   ChevronLeft, ChevronRight, Loader2, X, SlidersHorizontal,
-  Radar, Eye, Zap, Globe, BarChart3
+  Radar, Eye, Zap, Globe, BarChart3, AlertCircle
 } from 'lucide-react'
-import { DROPKILLER_COUNTRIES, PLATFORMS } from '@/types'
+
+// Countries and platforms config
+const DROPKILLER_COUNTRIES = [
+  { id: '65c75a5f-0c4a-45fb-8c90-5b538805a15a', name: 'Colombia', code: 'CO' },
+  { id: '82811e8b-d17d-4ab9-847a-fa925785d566', name: 'Ecuador', code: 'EC' },
+  { id: '98993bd0-955a-4fa3-9612-c9d4389c44d0', name: 'México', code: 'MX' },
+  { id: 'ad63080c-908d-4757-9548-30decb082b7e', name: 'Chile', code: 'CL' },
+  { id: '3f18ae66-2f98-4af1-860e-53ed93e5cde0', name: 'España', code: 'ES' },
+  { id: '6acfee32-9c25-4f95-b030-a005e488f3fb', name: 'Perú', code: 'PE' },
+  { id: 'c1f01c6a-99c7-4253-b67f-4e2607efae9e', name: 'Panamá', code: 'PA' },
+  { id: 'f2594db9-caee-4221-b4a6-9b6267730a2d', name: 'Paraguay', code: 'PY' },
+  { id: 'de93b0dd-d9d3-468d-8c44-e9780799a29f', name: 'Argentina', code: 'AR' },
+  { id: '77c15189-b3b9-4f55-9226-e56c231f87ac', name: 'Guatemala', code: 'GT' },
+]
+
+const PLATFORMS = ['dropi', 'easydrop', 'aliclick', 'dropea', 'droplatam', 'seventy block', 'wimpy', 'mastershop']
+
+// Demo data for when API fails
+const DEMO_PRODUCTS = [
+  {
+    id: 'demo-1',
+    name: 'Serum Vitamina C Premium Anti-edad',
+    image: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400&h=400&fit=crop',
+    price: 25000,
+    salePrice: 65000,
+    stock: 1250,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Beauty Supplier CO',
+    sales7d: 847,
+    sales30d: 2340,
+    billing7d: 55000000,
+    billing30d: 152000000,
+  },
+  {
+    id: 'demo-2',
+    name: 'Faja Colombiana Reductora Premium',
+    image: 'https://images.unsplash.com/photo-1506629082955-511b1aa562c8?w=400&h=400&fit=crop',
+    price: 35000,
+    salePrice: 89000,
+    stock: 890,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Moda Express',
+    sales7d: 623,
+    sales30d: 1890,
+    billing7d: 55000000,
+    billing30d: 168000000,
+  },
+  {
+    id: 'demo-3',
+    name: 'Auriculares Bluetooth Pro TWS',
+    image: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400&h=400&fit=crop',
+    price: 28000,
+    salePrice: 75000,
+    stock: 2100,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Tech Imports',
+    sales7d: 412,
+    sales30d: 1456,
+    billing7d: 30900000,
+    billing30d: 109200000,
+  },
+  {
+    id: 'demo-4',
+    name: 'Plancha Alisadora Profesional',
+    image: 'https://images.unsplash.com/photo-1522338242042-2d1c9cd60fc7?w=400&h=400&fit=crop',
+    price: 45000,
+    salePrice: 125000,
+    stock: 567,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Beauty Tools',
+    sales7d: 389,
+    sales30d: 1234,
+    billing7d: 48600000,
+    billing30d: 154000000,
+  },
+  {
+    id: 'demo-5',
+    name: 'Corrector de Postura Magnético',
+    image: 'https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?w=400&h=400&fit=crop',
+    price: 18000,
+    salePrice: 55000,
+    stock: 3200,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Health Plus',
+    sales7d: 1247,
+    sales30d: 4890,
+    billing7d: 68500000,
+    billing30d: 268000000,
+  },
+  {
+    id: 'demo-6',
+    name: 'Kit Maquillaje Profesional 24pcs',
+    image: 'https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=400&h=400&fit=crop',
+    price: 32000,
+    salePrice: 85000,
+    stock: 780,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Makeup Store',
+    sales7d: 534,
+    sales30d: 1678,
+    billing7d: 45400000,
+    billing30d: 142600000,
+  },
+  {
+    id: 'demo-7',
+    name: 'Reloj Inteligente Deportivo',
+    image: 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&h=400&fit=crop',
+    price: 42000,
+    salePrice: 95000,
+    stock: 1450,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Smart Gadgets',
+    sales7d: 756,
+    sales30d: 2234,
+    billing7d: 71800000,
+    billing30d: 212000000,
+  },
+  {
+    id: 'demo-8',
+    name: 'Lámpara LED Viral TikTok',
+    image: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop',
+    price: 22000,
+    salePrice: 59000,
+    stock: 2800,
+    platform: 'dropi',
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    supplier: 'Home Decor',
+    sales7d: 923,
+    sales30d: 3456,
+    billing7d: 54400000,
+    billing30d: 203900000,
+  },
+]
 
 interface Product {
   id: string
-  externalId: string
   name: string
-  slug: string
   image: string
   price: number
   salePrice: number
   stock: number
   platform: string
   country: string
-  countryCode: string
   supplier: string
-  supplierId: string
-  createdAt: string
-  updatedAt: string
   sales7d: number
   sales30d: number
   billing7d: number
   billing30d: number
-}
-
-interface ProductsResponse {
-  products: Product[]
-  total: number
-  page: number
-  limit: number
-  totalPages: number
 }
 
 function Header() {
@@ -93,22 +217,18 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 function calculateScore(product: Product): number {
-  // Score basado en ventas, stock y tendencia
   let score = 5
   
-  // Ventas 7d
   if (product.sales7d > 500) score += 2
   else if (product.sales7d > 200) score += 1.5
   else if (product.sales7d > 100) score += 1
   else if (product.sales7d > 50) score += 0.5
   
-  // Ratio ventas 7d vs 30d (tendencia)
   const weeklyRatio = product.sales30d > 0 ? (product.sales7d * 4) / product.sales30d : 0
-  if (weeklyRatio > 1.5) score += 1.5 // Trending up
+  if (weeklyRatio > 1.5) score += 1.5
   else if (weeklyRatio > 1.2) score += 1
-  else if (weeklyRatio < 0.7) score -= 1 // Trending down
+  else if (weeklyRatio < 0.7) score -= 1
   
-  // Stock saludable
   if (product.stock > 100 && product.stock < 5000) score += 0.5
   else if (product.stock < 50) score -= 0.5
   
@@ -129,7 +249,6 @@ function ProductCard({ product }: { product: Product }) {
   return (
     <Link href={`/productos/${product.id}`}>
       <div className="bg-radar-card border border-radar-border rounded-xl overflow-hidden transition-all duration-300 hover:border-radar-accent/50 hover:shadow-lg hover:shadow-radar-accent/10 cursor-pointer h-full">
-        {/* Image */}
         <div className="relative aspect-square bg-radar-dark overflow-hidden">
           {product.image ? (
             <img 
@@ -156,13 +275,11 @@ function ProductCard({ product }: { product: Product }) {
           </div>
         </div>
 
-        {/* Content */}
         <div className="p-4 space-y-4">
           <h3 className="font-semibold text-sm line-clamp-2 leading-tight min-h-[40px]">
             {product.name}
           </h3>
 
-          {/* Stats Grid */}
           <div className="grid grid-cols-2 gap-2">
             <div className="bg-radar-dark/50 rounded-lg p-2">
               <div className="text-xs text-gray-400 mb-0.5">Ventas 7d</div>
@@ -185,7 +302,6 @@ function ProductCard({ product }: { product: Product }) {
             </div>
           </div>
 
-          {/* Margin & Supplier */}
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-400">Margen: <span className="text-radar-accent font-bold">{margin > 0 ? margin : '?'}%</span></span>
             <span className="text-gray-500 truncate max-w-[100px]">{product.supplier}</span>
@@ -220,7 +336,6 @@ function FilterPanel({
       </div>
       
       <div className="p-4 space-y-6 overflow-y-auto h-[calc(100vh-60px)]">
-        {/* País */}
         <div>
           <label className="block text-sm font-medium mb-2">País</label>
           <select 
@@ -234,7 +349,6 @@ function FilterPanel({
           </select>
         </div>
 
-        {/* Plataforma */}
         <div>
           <label className="block text-sm font-medium mb-2">Plataforma</label>
           <select 
@@ -248,91 +362,28 @@ function FilterPanel({
           </select>
         </div>
 
-        {/* Ventas 7d */}
         <div>
-          <label className="block text-sm font-medium mb-2">Ventas 7 días</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              placeholder="Mín"
-              value={filters.s7min || ''}
-              onChange={(e) => setFilters({ ...filters, s7min: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-            <input
-              type="number"
-              placeholder="Máx"
-              value={filters.s7max || ''}
-              onChange={(e) => setFilters({ ...filters, s7max: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-          </div>
+          <label className="block text-sm font-medium mb-2">Ventas 7 días mínimas</label>
+          <input
+            type="number"
+            placeholder="Ej: 100"
+            value={filters.s7min || ''}
+            onChange={(e) => setFilters({ ...filters, s7min: e.target.value ? parseInt(e.target.value) : undefined })}
+            className="w-full bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
+          />
         </div>
 
-        {/* Ventas 30d */}
         <div>
-          <label className="block text-sm font-medium mb-2">Ventas 30 días</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              placeholder="Mín"
-              value={filters.s30min || ''}
-              onChange={(e) => setFilters({ ...filters, s30min: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-            <input
-              type="number"
-              placeholder="Máx"
-              value={filters.s30max || ''}
-              onChange={(e) => setFilters({ ...filters, s30max: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-          </div>
+          <label className="block text-sm font-medium mb-2">Stock mínimo</label>
+          <input
+            type="number"
+            placeholder="Ej: 50"
+            value={filters.stockMin || ''}
+            onChange={(e) => setFilters({ ...filters, stockMin: e.target.value ? parseInt(e.target.value) : undefined })}
+            className="w-full bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
+          />
         </div>
 
-        {/* Stock */}
-        <div>
-          <label className="block text-sm font-medium mb-2">Stock</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              placeholder="Mín"
-              value={filters.stockMin || ''}
-              onChange={(e) => setFilters({ ...filters, stockMin: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-            <input
-              type="number"
-              placeholder="Máx"
-              value={filters.stockMax || ''}
-              onChange={(e) => setFilters({ ...filters, stockMax: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-          </div>
-        </div>
-
-        {/* Precio */}
-        <div>
-          <label className="block text-sm font-medium mb-2">Precio de venta</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="number"
-              placeholder="Mín"
-              value={filters.priceMin || ''}
-              onChange={(e) => setFilters({ ...filters, priceMin: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-            <input
-              type="number"
-              placeholder="Máx"
-              value={filters.priceMax || ''}
-              onChange={(e) => setFilters({ ...filters, priceMax: e.target.value ? parseInt(e.target.value) : undefined })}
-              className="bg-radar-dark border border-radar-border rounded-lg p-2 text-sm"
-            />
-          </div>
-        </div>
-
-        {/* Clear & Apply */}
         <div className="pt-4 border-t border-radar-border space-y-2">
           <button
             onClick={() => setFilters({ 
@@ -357,32 +408,22 @@ function FilterPanel({
 }
 
 export default function ProductosPage() {
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [totalPages, setTotalPages] = useState(1)
-  const [total, setTotal] = useState(0)
+  const [usingDemo, setUsingDemo] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   
   const [filters, setFilters] = useState({
-    country: searchParams.get('country') || '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
-    platform: searchParams.get('platform') || 'dropi',
-    search: searchParams.get('search') || '',
-    s7min: searchParams.get('s7min') ? parseInt(searchParams.get('s7min')!) : undefined,
-    s7max: searchParams.get('s7max') ? parseInt(searchParams.get('s7max')!) : undefined,
-    s30min: searchParams.get('s30min') ? parseInt(searchParams.get('s30min')!) : undefined,
-    s30max: searchParams.get('s30max') ? parseInt(searchParams.get('s30max')!) : undefined,
-    stockMin: searchParams.get('stockMin') ? parseInt(searchParams.get('stockMin')!) : undefined,
-    stockMax: searchParams.get('stockMax') ? parseInt(searchParams.get('stockMax')!) : undefined,
-    priceMin: searchParams.get('priceMin') ? parseInt(searchParams.get('priceMin')!) : undefined,
-    priceMax: searchParams.get('priceMax') ? parseInt(searchParams.get('priceMax')!) : undefined,
-    page: searchParams.get('page') ? parseInt(searchParams.get('page')!) : 1,
+    country: '65c75a5f-0c4a-45fb-8c90-5b538805a15a',
+    platform: 'dropi',
+    search: '',
+    s7min: undefined as number | undefined,
+    stockMin: undefined as number | undefined,
+    page: 1,
   })
 
-  const [searchInput, setSearchInput] = useState(filters.search)
+  const [searchInput, setSearchInput] = useState('')
 
   useEffect(() => {
     fetchProducts()
@@ -403,16 +444,37 @@ export default function ProductosPage() {
       const response = await fetch(`/api/products?${params.toString()}`)
       
       if (!response.ok) {
-        throw new Error('Error al cargar productos')
+        throw new Error('API no disponible')
       }
       
-      const data: ProductsResponse = await response.json()
-      setProducts(data.products || [])
-      setTotalPages(data.totalPages || 1)
-      setTotal(data.total || 0)
+      const data = await response.json()
+      
+      if (data.products && data.products.length > 0) {
+        setProducts(data.products)
+        setUsingDemo(false)
+      } else {
+        throw new Error('Sin productos')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error desconocido')
-      setProducts([])
+      console.log('Using demo data:', err)
+      // Use demo data on error
+      let filtered = [...DEMO_PRODUCTS]
+      
+      if (filters.s7min) {
+        filtered = filtered.filter(p => p.sales7d >= filters.s7min!)
+      }
+      if (filters.stockMin) {
+        filtered = filtered.filter(p => p.stock >= filters.stockMin!)
+      }
+      if (filters.search) {
+        filtered = filtered.filter(p => 
+          p.name.toLowerCase().includes(filters.search.toLowerCase())
+        )
+      }
+      
+      setProducts(filtered)
+      setUsingDemo(true)
+      setError(null)
     } finally {
       setLoading(false)
     }
@@ -423,11 +485,6 @@ export default function ProductosPage() {
     setFilters({ ...filters, search: searchInput, page: 1 })
   }
 
-  function handlePageChange(newPage: number) {
-    setFilters({ ...filters, page: newPage })
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
   const currentCountry = DROPKILLER_COUNTRIES.find(c => c.id === filters.country)
 
   return (
@@ -435,17 +492,28 @@ export default function ProductosPage() {
       <Header />
       
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {/* Title & Stats */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2">
             🔍 Explorar <span className="gradient-text">Productos</span>
           </h1>
           <p className="text-gray-400">
-            {total.toLocaleString()} productos encontrados en {currentCountry?.name || 'todos los países'}
+            {products.length} productos {usingDemo ? '(datos demo)' : ''} en {currentCountry?.name || 'Colombia'}
           </p>
         </div>
 
-        {/* Search & Filters Bar */}
+        {usingDemo && (
+          <div className="bg-radar-warning/10 border border-radar-warning/30 rounded-lg p-4 mb-6 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-radar-warning flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-radar-warning font-medium">Modo Demo Activo</p>
+              <p className="text-sm text-gray-400 mt-1">
+                La API de DropKiller requiere autenticación activa. Estás viendo datos de ejemplo.
+                Para datos reales, asegúrate de tener una sesión válida en DropKiller.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col sm:flex-row gap-4 mb-8">
           <form onSubmit={handleSearch} className="flex-1 flex gap-2">
             <div className="relative flex-1">
@@ -475,7 +543,6 @@ export default function ProductosPage() {
           </button>
         </div>
 
-        {/* Quick Filters */}
         <div className="flex flex-wrap gap-2 mb-6">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-radar-accent/10 border border-radar-accent/30 rounded-full text-sm">
             <Globe className="w-4 h-4 text-radar-accent" />
@@ -493,20 +560,6 @@ export default function ProductosPage() {
           )}
         </div>
 
-        {/* Error State */}
-        {error && (
-          <div className="bg-radar-danger/10 border border-radar-danger/30 rounded-lg p-4 mb-8">
-            <p className="text-radar-danger">{error}</p>
-            <button 
-              onClick={fetchProducts}
-              className="mt-2 text-sm underline hover:no-underline"
-            >
-              Reintentar
-            </button>
-          </div>
-        )}
-
-        {/* Loading State */}
         {loading && (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-radar-accent animate-spin" />
@@ -514,44 +567,15 @@ export default function ProductosPage() {
           </div>
         )}
 
-        {/* Products Grid */}
         {!loading && products.length > 0 && (
-          <>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              {products.map((product) => (
-                <ProductCard key={product.id} product={product} />
-              ))}
-            </div>
-
-            {/* Pagination */}
-            <div className="flex items-center justify-center gap-4 mt-8">
-              <button
-                onClick={() => handlePageChange(filters.page - 1)}
-                disabled={filters.page <= 1}
-                className="flex items-center gap-2 px-4 py-2 bg-radar-card border border-radar-border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:border-radar-accent/50 transition-colors"
-              >
-                <ChevronLeft className="w-5 h-5" />
-                Anterior
-              </button>
-              
-              <span className="text-gray-400">
-                Página {filters.page} de {totalPages}
-              </span>
-              
-              <button
-                onClick={() => handlePageChange(filters.page + 1)}
-                disabled={filters.page >= totalPages}
-                className="flex items-center gap-2 px-4 py-2 bg-radar-card border border-radar-border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:border-radar-accent/50 transition-colors"
-              >
-                Siguiente
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
-          </>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+            {products.map((product) => (
+              <ProductCard key={product.id} product={product} />
+            ))}
+          </div>
         )}
 
-        {/* Empty State */}
-        {!loading && products.length === 0 && !error && (
+        {!loading && products.length === 0 && (
           <div className="text-center py-20">
             <Package className="w-16 h-16 text-gray-500 mx-auto mb-4" />
             <h3 className="text-xl font-semibold mb-2">No se encontraron productos</h3>
@@ -560,7 +584,6 @@ export default function ProductosPage() {
         )}
       </main>
 
-      {/* Filter Panel */}
       <FilterPanel 
         filters={filters}
         setFilters={setFilters}
@@ -568,7 +591,6 @@ export default function ProductosPage() {
         onClose={() => setFilterOpen(false)}
       />
       
-      {/* Overlay */}
       {filterOpen && (
         <div 
           className="fixed inset-0 bg-black/50 z-40"
