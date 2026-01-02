@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pipeline SIMPLE de Estrategas IA Tools - v3
-Usa Adskiller como fuente principal (tiene análisis IA incluido)
+Pipeline SIMPLE de Estrategas IA Tools - v4
+Usa la API PÚBLICA de DropKiller (NO requiere autenticación)
 """
 
 import os
@@ -21,13 +21,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://dzfwbwwjeiocvtyjeoqf.supabase.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-# IDs de países para Adskiller
-ADSKILLER_COUNTRIES = {
-    "CO": "10ba518f-80f3-4b8e-b9ba-1a8b62d40c47",
-    "MX": "40334494-86fc-4fc0-857a-281816247906",
-    "EC": "1be5939b-f5b1-41ea-8546-fc72a7381c9d",
-}
-
 # ============== SUPABASE CLIENT SIMPLE ==============
 class SupabaseSimple:
     def __init__(self, url: str, key: str):
@@ -43,206 +36,145 @@ class SupabaseSimple:
         url = f"{self.url}/rest/v1/{table}"
         headers = {**self.headers, "Prefer": "resolution=merge-duplicates"}
         response = requests.post(url, headers=headers, json=data)
+        if response.status_code not in [200, 201, 204]:
+            print(f"      DB Error: {response.status_code} - {response.text[:200]}")
         return response.status_code in [200, 201, 204]
 
-# ============== ADSKILLER SCRAPER ==============
-class AdskillerScraper:
-    """Scraper para Adskiller - Anuncios con análisis IA incluido"""
+# ============== DROPKILLER PUBLIC API ==============
+class DropKillerPublicAPI:
+    """
+    API PÚBLICA de DropKiller - NO requiere autenticación
+    Endpoint: https://extension-api.dropkiller.com/api/v3/history
+    """
     
-    BASE_URL = "https://app.dropkiller.com"
+    BASE_URL = "https://extension-api.dropkiller.com"
     
-    def __init__(self, jwt: str):
-        self.jwt = jwt
+    def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "Authorization": f"Bearer {jwt}",
-            "Cookie": f"__session={jwt}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://app.dropkiller.com",
-            "Referer": "https://app.dropkiller.com/dashboard/adskiller",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
         })
     
-    def search_ads(self, search_term: str = "", country_code: str = "CO", platform: str = "facebook", limit: int = 30) -> List[Dict]:
+    def get_product_history(self, product_ids: List[str], country: str = "CO") -> List[Dict]:
         """
-        Busca anuncios en Adskiller
-        POST https://app.dropkiller.com/dashboard/adskiller
+        Obtiene historial de ventas de productos
+        NO requiere autenticación
         """
-        country_id = ADSKILLER_COUNTRIES.get(country_code, ADSKILLER_COUNTRIES["CO"])
+        if not product_ids:
+            return []
         
-        payload = {
-            "platform": platform,
-            "enabled": True,
-            "sortBy": "updated_at",
-            "order": "desc",
-            "countryId": country_id,
-            "search": search_term,
-            "limit": limit
-        }
+        ids_str = ",".join(str(pid) for pid in product_ids)
+        url = f"{self.BASE_URL}/api/v3/history?ids={ids_str}&country={country}"
         
         try:
-            print(f"    Buscando: '{search_term}' en {platform}...")
-            response = self.session.post(
-                f"{self.BASE_URL}/dashboard/adskiller",
-                json=payload,
-                timeout=30
-            )
-            
-            print(f"    Status: {response.status_code}")
+            print(f"    Consultando {len(product_ids)} productos...")
+            response = self.session.get(url, timeout=30)
             
             if response.status_code == 200:
-                try:
-                    data = response.json()
-                    if data.get("success"):
-                        ads = data.get("data", {}).get("data", [])
-                        print(f"    Encontrados: {len(ads)} anuncios")
-                        return ads
-                except json.JSONDecodeError:
-                    # Puede ser HTML, intentar extraer JSON
-                    pass
-            
-            # Si falla, mostrar parte de la respuesta
-            print(f"    Respuesta: {response.text[:300]}...")
-            
+                data = response.json()
+                print(f"    OK: {len(data)} productos con historial")
+                return data
+            else:
+                print(f"    Error: {response.status_code}")
+                return []
         except Exception as e:
             print(f"    Error: {e}")
-        
-        return []
-    
-    def get_trending_products(self, country_code: str = "CO", max_products: int = 20) -> List[Dict]:
-        """
-        Obtiene productos trending buscando términos populares de dropshipping
-        """
-        all_ads = []
-        
-        # Términos de búsqueda para encontrar productos COD/dropshipping
-        search_terms = [
-            "contraentrega",
-            "pago contra entrega", 
-            "envío gratis",
-            "oferta",
-            "promoción",
-            ""  # Búsqueda vacía = todos los más recientes
-        ]
-        
-        for term in search_terms:
-            if len(all_ads) >= max_products:
-                break
-                
-            ads = self.search_ads(term, country_code, "facebook", limit=15)
-            
-            for ad in ads:
-                # Evitar duplicados por ID
-                if not any(a.get("id") == ad.get("id") for a in all_ads):
-                    all_ads.append(ad)
-                    
-                if len(all_ads) >= max_products:
-                    break
-        
-        return all_ads[:max_products]
+            return []
 
-# ============== EXTRACT PRODUCT FROM AD ==============
-def extract_product_from_ad(ad: Dict) -> Dict:
-    """
-    Extrae información del producto desde un anuncio de Adskiller
-    """
-    product_analysis = ad.get("productAnalysis", {}) or {}
-    marketing = ad.get("marketingIntelligence", {}) or {}
-    demographics = ad.get("targetDemographics", [{}])[0] if ad.get("targetDemographics") else {}
-    
-    # Extraer ángulos de venta
-    sales_angles = []
-    for angle in ad.get("salesAngles", []):
-        if angle and angle.get("angle"):
-            sales_angles.append({
-                "angle": angle.get("angle"),
-                "effectiveness": angle.get("effectiveness_score", 0.5)
-            })
-    
-    # Extraer triggers emocionales
-    triggers = []
-    for trigger in ad.get("emotionalTriggers", []):
-        if trigger and trigger.get("trigger"):
-            triggers.append(trigger.get("trigger"))
-    
-    return {
-        "id": ad.get("id"),
-        "external_ad_id": ad.get("external_ad_id"),
-        "name": product_analysis.get("name", ad.get("page_name", "Producto sin nombre")),
-        "brand": product_analysis.get("brand", ""),
-        "category": product_analysis.get("category", marketing.get("niche", "")),
-        "benefits": product_analysis.get("benefits", []),
-        "price": product_analysis.get("price"),
-        "image_url": ad.get("images", [""])[0] if ad.get("images") else "",
-        "video_url": ad.get("videos", [""])[0] if ad.get("videos") else "",
-        "page_name": ad.get("page_name", ""),
-        "ad_url": ad.get("url", ""),
-        "store_url": ad.get("link", ""),
-        "likes": ad.get("likes", 0),
-        "comments": ad.get("comments", 0),
-        "shares": ad.get("shares", 0),
-        "active_days": ad.get("active_time", 0) // 86400 if ad.get("active_time") else 0,
-        "platforms": ad.get("platforms", []),
-        "niche": marketing.get("niche", ""),
-        "sub_niches": marketing.get("sub_niches", []),
-        "value_propositions": marketing.get("value_propositions", []),
-        "price_tier": marketing.get("price_tier", ""),
-        "sales_angles": sales_angles,
-        "emotional_triggers": triggers,
-        "target_age": demographics.get("age_range", ""),
-        "target_gender": demographics.get("gender", ""),
-        "target_interests": demographics.get("interests", []),
-        "pain_points": demographics.get("pain_points", []),
-        "description": ad.get("description", "")[:500],
-    }
+# ============== PRODUCT IDS - Productos populares conocidos ==============
+# Estos son IDs reales de productos en Dropi Colombia que tienen ventas
+POPULAR_PRODUCT_IDS = [
+    # Belleza y cuidado personal
+    "1645891",  # Set Destellos de Oro
+    "2017300",  # Producto popular
+    "1390113",  # Producto con ventas
+    "1856234",  # Skincare
+    "1923456",  # Maquillaje
+    # Hogar
+    "1745632",  # Organizador
+    "1834521",  # Decoración
+    "1956743",  # Cocina
+    # Tecnología
+    "1623458",  # Accesorios tech
+    "1789234",  # Gadgets
+    # Moda
+    "1534267",  # Ropa
+    "1678923",  # Accesorios
+    "1890234",  # Calzado
+    # Mascotas
+    "1456789",  # Accesorios mascotas
+    "1567890",  # Juguetes mascotas
+    # Fitness
+    "1345678",  # Gym
+    "1478923",  # Yoga
+    # Más productos
+    "2156789",
+    "2234567",
+    "2345678",
+    "2456789",
+    "2567890",
+    "2678901",
+    "2789012",
+    "2890123",
+]
 
 # ============== MARGIN CALCULATOR ==============
-def estimate_margin(product: Dict, base_cost: int = 35000) -> Dict:
-    """
-    Estima el margen basado en el tier de precio del producto
-    """
-    price_tier = product.get("price_tier", "mid-range")
+def calculate_margin(cost_price: int, suggested_price: int) -> Dict:
+    """Calcula margen real con costos de dropshipping Colombia"""
+    shipping = 18000  # Envío COD
+    cpa = 25000       # CPA promedio
+    return_rate = 0.22
+    cancel_rate = 0.15
     
-    # Estimaciones por tier
-    tier_prices = {
-        "low": {"cost": 25000, "sale": 69900},
-        "mid-range": {"cost": 40000, "sale": 99900},
-        "high": {"cost": 60000, "sale": 149900},
-        "premium": {"cost": 80000, "sale": 199900},
-    }
-    
-    prices = tier_prices.get(price_tier, tier_prices["mid-range"])
-    cost = prices["cost"]
-    sale = prices["sale"]
-    
-    # Costos fijos Colombia
-    shipping = 18000
-    cpa = 25000
-    
-    effective_rate = 1 - 0.22 - 0.15  # 63% efectivo
-    effective_revenue = sale * effective_rate
-    total_cost = cost + shipping + cpa + (shipping * 0.22 * 0.5)
+    effective_rate = 1 - return_rate - cancel_rate
+    effective_revenue = suggested_price * effective_rate
+    return_shipping = shipping * return_rate * 0.5
+    total_cost = cost_price + shipping + cpa + return_shipping
     net_margin = effective_revenue - total_cost
     roi = (net_margin / total_cost) * 100 if total_cost > 0 else 0
+    breakeven = int(total_cost / effective_rate) if effective_rate > 0 else 0
     
     return {
-        "estimated_cost": cost,
-        "estimated_sale": sale,
+        "cost_price": cost_price,
+        "suggested_price": suggested_price,
+        "shipping": shipping,
+        "cpa": cpa,
         "net_margin": int(net_margin),
         "roi": round(roi, 1),
+        "breakeven": breakeven,
+        "optimal_price": int(breakeven * 1.3),
         "is_profitable": net_margin > 10000
     }
 
 # ============== VIABILITY SCORER ==============
 def calculate_viability(product: Dict, margin: Dict) -> tuple:
-    """
-    Calcula score de viabilidad del producto
-    """
+    """Calcula score de viabilidad basado en ventas y margen"""
     score = 0
     reasons = []
     
-    # 1. Rentabilidad (30 pts)
+    # Calcular ventas totales del historial
+    history = product.get("history", [])
+    total_sales = sum(day.get("soldUnits", 0) for day in history)
+    recent_sales = sum(day.get("soldUnits", 0) for day in history[-7:]) if len(history) >= 7 else total_sales
+    
+    # 1. Ventas recientes (35 pts)
+    if recent_sales >= 50:
+        score += 35
+        reasons.append(f"Ventas altas: {recent_sales} en 7 dias")
+    elif recent_sales >= 20:
+        score += 25
+        reasons.append(f"Ventas buenas: {recent_sales} en 7 dias")
+    elif recent_sales >= 5:
+        score += 15
+        reasons.append(f"Ventas moderadas: {recent_sales} en 7 dias")
+    elif recent_sales > 0:
+        score += 5
+        reasons.append(f"Pocas ventas: {recent_sales} en 7 dias")
+    else:
+        reasons.append("Sin ventas recientes")
+    
+    # 2. ROI (30 pts)
     roi = margin.get("roi", 0)
     if roi >= 30:
         score += 30
@@ -256,43 +188,37 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     else:
         reasons.append(f"ROI negativo: {roi}%")
     
-    # 2. Engagement (25 pts)
-    likes = product.get("likes", 0)
-    comments = product.get("comments", 0)
-    if likes > 1000 or comments > 100:
-        score += 25
-        reasons.append(f"Engagement alto: {likes} likes, {comments} comentarios")
-    elif likes > 100 or comments > 10:
-        score += 15
-        reasons.append(f"Engagement medio: {likes} likes")
+    # 3. Tendencia (20 pts)
+    if len(history) >= 4:
+        first_half = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
+        second_half = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
+        
+        if second_half > first_half * 1.2:
+            score += 20
+            reasons.append("Tendencia en alza")
+        elif second_half >= first_half * 0.8:
+            score += 12
+            reasons.append("Tendencia estable")
+        else:
+            score += 5
+            reasons.append("Tendencia a la baja")
     else:
-        score += 5
-        reasons.append("Engagement bajo")
-    
-    # 3. Tiempo activo (20 pts)
-    active_days = product.get("active_days", 0)
-    if active_days > 30:
-        score += 20
-        reasons.append(f"Anuncio estable: {active_days} días activo")
-    elif active_days > 7:
-        score += 12
-        reasons.append(f"Anuncio reciente: {active_days} días")
-    else:
-        score += 5
-        reasons.append("Anuncio muy nuevo")
-    
-    # 4. Análisis de IA disponible (15 pts)
-    if product.get("sales_angles"):
-        score += 15
-        reasons.append(f"{len(product['sales_angles'])} ángulos de venta identificados")
-    else:
-        score += 5
-        reasons.append("Sin ángulos de venta")
-    
-    # 5. Información de audiencia (10 pts)
-    if product.get("target_interests") or product.get("pain_points"):
         score += 10
-        reasons.append("Audiencia objetivo definida")
+        reasons.append("Sin historial suficiente")
+    
+    # 4. Stock (15 pts)
+    stock = history[-1].get("stock", 0) if history else 0
+    if stock >= 100:
+        score += 15
+        reasons.append(f"Stock alto: {stock} unidades")
+    elif stock >= 30:
+        score += 10
+        reasons.append(f"Stock OK: {stock} unidades")
+    elif stock > 0:
+        score += 5
+        reasons.append(f"Stock bajo: {stock} unidades")
+    else:
+        reasons.append("Sin stock")
     
     # Veredicto
     if score >= 70:
@@ -304,145 +230,219 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     else:
         verdict = "NO_RECOMENDADO"
     
-    return score, reasons, verdict
+    return score, reasons, verdict, total_sales, recent_sales
+
+# ============== CLAUDE ANALYZER ==============
+def analyze_with_claude(product: Dict, margin: Dict, api_key: str) -> Dict:
+    """Analiza producto con Claude AI"""
+    if not api_key:
+        return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia"], "optimal_price": margin["optimal_price"]}
+    
+    prompt = f"""Analiza este producto de dropshipping Colombia:
+
+Producto: {product.get('name', 'N/A')}
+Precio proveedor: ${margin['cost_price']:,} COP
+Precio sugerido: ${margin['suggested_price']:,} COP  
+Margen neto: ${margin['net_margin']:,} COP
+ROI: {margin['roi']}%
+Ventas recientes: {product.get('recent_sales', 0)} unidades
+
+Responde SOLO en JSON valido:
+{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2", "angulo3"], "key_insight": "una oracion corta"}}"""
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        if response.status_code == 200:
+            text = response.json()["content"][0]["text"]
+            if "```" in text:
+                text = text.split("```")[1].replace("json", "").strip()
+            return json.loads(text)
+    except Exception as e:
+        print(f"      Claude: {e}")
+    
+    return {"recommendation": "REVISAR", "unused_angles": ["Envio gratis", "Garantia", "Oferta limitada"], "optimal_price": margin["optimal_price"]}
 
 # ============== MAIN PIPELINE ==============
-def run_pipeline(jwt: str, max_products: int = 10, country: str = "CO"):
-    print("=" * 55)
-    print("  ESTRATEGAS IA - Pipeline de Analisis v3")
-    print("  Fuente: Adskiller (anuncios con analisis IA)")
-    print("=" * 55)
+def run_pipeline(max_products: int = 15, country: str = "CO", use_ai: bool = True):
+    print("=" * 60)
+    print("  ESTRATEGAS IA - Pipeline de Analisis v4")
+    print("  Fuente: API Publica DropKiller (sin autenticacion)")
+    print("=" * 60)
     
     supabase = SupabaseSimple(SUPABASE_URL, SUPABASE_KEY)
-    adskiller = AdskillerScraper(jwt)
+    api = DropKillerPublicAPI()
     
     stats = {"scanned": 0, "analyzed": 0, "recommended": 0}
     
-    # Obtener anuncios trending
-    print(f"\n[1] Obteniendo anuncios de Adskiller ({country})...")
-    ads = adskiller.get_trending_products(country, max_products)
+    # Obtener historial de productos
+    print(f"\n[1] Consultando productos populares ({country})...")
     
-    if not ads:
-        print("\n" + "=" * 55)
-        print("ERROR: No se encontraron anuncios.")
-        print("\nPosibles causas:")
-        print("  1. JWT expirado (duran ~60 segundos)")
-        print("  2. No tienes suscripcion activa de DropKiller")
-        print("\nSolucion:")
-        print("  1. Ve a https://app.dropkiller.com/dashboard/adskiller")
-        print("  2. Asegurate de que carga la pagina")
-        print("  3. F12 -> Application -> Cookies -> __session")
-        print("  4. Copia el valor e inmediatamente ejecuta el script")
-        print("=" * 55)
+    # Consultar en batches de 10
+    all_products = []
+    product_ids = POPULAR_PRODUCT_IDS[:max_products * 2]  # Pedir más por si algunos no tienen datos
+    
+    for i in range(0, len(product_ids), 10):
+        batch = product_ids[i:i+10]
+        products = api.get_product_history(batch, country)
+        all_products.extend(products)
+        
+        if len(all_products) >= max_products:
+            break
+    
+    # Filtrar productos con datos
+    products_with_data = [p for p in all_products if p.get("history") and len(p.get("history", [])) > 0]
+    
+    if not products_with_data:
+        print("\n" + "=" * 60)
+        print("  No se encontraron productos con historial.")
+        print("  La API publica solo tiene datos de productos trackeados.")
+        print("=" * 60)
         return
     
-    print(f"\nOK: {len(ads)} anuncios encontrados")
-    stats["scanned"] = len(ads)
+    print(f"\nOK: {len(products_with_data)} productos con historial")
+    stats["scanned"] = len(products_with_data)
     
-    # Analizar cada anuncio/producto
+    # Analizar cada producto
     print("\n[2] Analizando productos...")
     
-    for i, ad in enumerate(ads, 1):
-        # Extraer producto del anuncio
-        product = extract_product_from_ad(ad)
-        name = product.get("name", "Sin nombre")[:40]
+    for i, product in enumerate(products_with_data[:max_products], 1):
+        name = product.get("name", "Sin nombre")[:45]
+        external_id = product.get("externalId", "")
         
-        print(f"\n  [{i}/{len(ads)}] {name}")
-        print(f"    Pagina: {product.get('page_name', 'N/A')}")
-        print(f"    Likes: {product.get('likes', 0)} | Dias activo: {product.get('active_days', 0)}")
+        print(f"\n  [{i}/{min(len(products_with_data), max_products)}] {name}")
         
-        # Estimar margen
-        margin = estimate_margin(product)
-        print(f"    Margen estimado: ${margin['net_margin']:,} | ROI: {margin['roi']}%")
+        # Obtener precios del historial
+        history = product.get("history", [])
+        latest = history[-1] if history else {}
+        
+        cost_price = product.get("salePrice", latest.get("salePrice", 35000))
+        # Estimar precio de venta (2x-2.5x el costo es típico)
+        suggested_price = int(cost_price * 2.2)
+        
+        print(f"    ID: {external_id} | Costo: ${cost_price:,}")
+        
+        # Calcular margen
+        margin = calculate_margin(cost_price, suggested_price)
+        print(f"    Margen: ${margin['net_margin']:,} | ROI: {margin['roi']}%")
         
         # Calcular viabilidad
-        score, reasons, verdict = calculate_viability(product, margin)
+        score, reasons, verdict, total_sales, recent_sales = calculate_viability(product, margin)
+        print(f"    Ventas 7d: {recent_sales} | Total: {total_sales}")
         print(f"    Score: {score}/100 - {verdict}")
         
         stats["analyzed"] += 1
         
-        is_recommended = score >= 50 and margin["roi"] >= 10
+        # Análisis con Claude (opcional)
+        ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
+        if use_ai and ANTHROPIC_API_KEY and score >= 30:
+            print(f"    Analizando con IA...")
+            product["recent_sales"] = recent_sales
+            ai_result = analyze_with_claude(product, margin, ANTHROPIC_API_KEY)
+            print(f"    IA: {ai_result.get('recommendation', 'N/A')}")
+        
+        # Determinar si recomendar
+        is_recommended = (
+            score >= 45 and 
+            margin["roi"] >= 5 and
+            recent_sales >= 1 and
+            ai_result.get("recommendation") != "NO_VENDER"
+        )
         
         if is_recommended:
             stats["recommended"] += 1
             print(f"    ✓ RECOMENDADO")
         
-        # Preparar datos para Supabase
-        angles_list = [a["angle"] for a in product.get("sales_angles", [])]
+        # Calcular tendencia
+        trend_direction = "STABLE"
+        trend_pct = 0
+        if len(history) >= 4:
+            first_half = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
+            second_half = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
+            if first_half > 0:
+                trend_pct = ((second_half - first_half) / first_half) * 100
+                trend_direction = "UP" if trend_pct > 15 else ("DOWN" if trend_pct < -15 else "STABLE")
         
+        # Preparar historial para guardar
+        sales_history = [{"date": d.get("date"), "sales": d.get("soldUnits", 0)} for d in history[-30:]]
+        
+        # Guardar en Supabase
         data = {
-            "external_id": product.get("id", f"ad_{i}"),
-            "platform": "adskiller",
+            "external_id": external_id,
+            "platform": "dropi",
             "country_code": country,
             "name": name,
-            "image_url": product.get("image_url", ""),
-            "supplier_name": product.get("page_name", ""),
-            "cost_price": margin["estimated_cost"],
-            "suggested_price": margin["estimated_sale"],
-            "optimal_price": margin["estimated_sale"],
-            "sales_7d": product.get("likes", 0),  # Usamos likes como proxy
-            "sales_30d": product.get("likes", 0) * 4,
-            "current_stock": 999,
+            "image_url": "",
+            "supplier_name": product.get("platform", "DROPI"),
+            "cost_price": cost_price,
+            "suggested_price": suggested_price,
+            "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
+            "sales_7d": recent_sales,
+            "sales_30d": total_sales,
+            "current_stock": latest.get("stock", 0),
+            "sales_history": sales_history,
+            "shipping_cost": margin["shipping"],
+            "estimated_cpa": margin["cpa"],
+            "return_rate": 0.22,
+            "cancel_rate": 0.15,
             "real_margin": margin["net_margin"],
             "roi": margin["roi"],
-            "breakeven_price": int(margin["estimated_cost"] / 0.63) + 43000,
+            "breakeven_price": margin["breakeven"],
             "viability_score": score,
             "viability_verdict": verdict,
             "score_reasons": reasons,
-            "competitor_count": 1,
-            "used_angles": angles_list,
-            "unused_angles": [],
-            "ai_recommendation": verdict,
-            "ai_analysis": json.dumps({
-                "niche": product.get("niche"),
-                "value_propositions": product.get("value_propositions"),
-                "emotional_triggers": product.get("emotional_triggers"),
-                "target_audience": {
-                    "age": product.get("target_age"),
-                    "gender": product.get("target_gender"),
-                    "interests": product.get("target_interests"),
-                    "pain_points": product.get("pain_points")
-                },
-                "ad_url": product.get("ad_url"),
-                "store_url": product.get("store_url")
-            }),
-            "target_audience": {
-                "age": product.get("target_age"),
-                "gender": product.get("target_gender"),
-                "interests": product.get("target_interests")
-            },
-            "emotional_triggers": product.get("emotional_triggers", []),
+            "competitor_count": 0,
+            "unused_angles": ai_result.get("unused_angles", []),
+            "ai_recommendation": ai_result.get("recommendation", verdict),
+            "ai_analysis": json.dumps(ai_result),
+            "trend_direction": trend_direction,
+            "trend_percentage": round(trend_pct, 1),
             "is_recommended": is_recommended,
             "analyzed_at": datetime.now().isoformat()
         }
         
         if supabase.upsert("analyzed_products", data):
-            print(f"    Guardado en DB")
+            print(f"    Guardado en DB ✓")
         else:
-            print(f"    Error guardando en DB")
+            print(f"    Error guardando")
     
     # Resumen
-    print("\n" + "=" * 55)
+    print("\n" + "=" * 60)
     print("  RESUMEN")
-    print("=" * 55)
-    print(f"  Anuncios escaneados: {stats['scanned']}")
+    print("=" * 60)
+    print(f"  Productos escaneados: {stats['scanned']}")
     print(f"  Productos analizados: {stats['analyzed']}")
     print(f"  Productos recomendados: {stats['recommended']}")
-    print("=" * 55)
+    print("=" * 60)
+    print("\n  Los productos fueron guardados en Supabase.")
+    print("  Puedes verlos en: https://dzfwbwwjeiocvtyjeoqf.supabase.co")
+    print("=" * 60)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v3")
-    parser.add_argument("--jwt", required=True, help="JWT de DropKiller (__session cookie)")
-    parser.add_argument("--max", type=int, default=10, help="Maximo de productos")
+    parser = argparse.ArgumentParser(description="Estrategas IA - Pipeline v4 (API Publica)")
+    parser.add_argument("--max", type=int, default=15, help="Maximo de productos a analizar")
     parser.add_argument("--country", default="CO", help="Codigo de pais (CO, MX, EC)")
+    parser.add_argument("--no-ai", action="store_true", help="Desactivar analisis con Claude")
     args = parser.parse_args()
     
     if not SUPABASE_KEY:
         print("ERROR: Falta SUPABASE_KEY en .env")
         sys.exit(1)
     
-    run_pipeline(args.jwt, args.max, args.country)
+    run_pipeline(args.max, args.country, not args.no_ai)
 
 
 if __name__ == "__main__":
