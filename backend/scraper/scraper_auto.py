@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.0
-Con paginación para obtener muchos más productos
+Scraper Automático de DropKiller - Estrategas IA v4.1
+Paginación por URL (&page=X) para obtener todos los productos
 """
 
 import os
@@ -224,61 +224,52 @@ class DropKillerScraper:
         }''')
     
     async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100, max_pages: int = 5) -> List[Dict]:
-        """Extrae productos de DropKiller con paginación"""
+        """Extrae productos de DropKiller con paginación por URL"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
-        base_url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30"
         
         all_products = []
         seen_ids = set()
         
         try:
-            # Primera página
-            await self.page.goto(base_url, wait_until='domcontentloaded', timeout=60000)
-            print("      Esperando tabla...")
-            await asyncio.sleep(8)
-            
-            # Obtener número total de páginas
-            total_pages = await self.page.evaluate('''() => {
-                const text = document.body.innerText;
-                const match = text.match(/Página\\s+\\d+\\s+de\\s+(\\d+)/i);
-                return match ? parseInt(match[1]) : 1;
-            }''')
-            
-            pages_to_scrape = min(total_pages, max_pages)
-            print(f"      Total páginas disponibles: {total_pages} (scrapeando {pages_to_scrape})")
-            
-            for page_num in range(1, pages_to_scrape + 1):
-                print(f"      Página {page_num}/{pages_to_scrape}...")
+            for page_num in range(1, max_pages + 1):
+                # Construir URL con paginación
+                url = f"https://app.dropkiller.com/dashboard/products?country={country_id}&limit=50&page={page_num}&s7min={min_sales}"
                 
-                if page_num > 1:
-                    # Navegar a la siguiente página
-                    # Buscar botón de siguiente o hacer clic en el número de página
-                    try:
-                        # Intentar clic en botón "siguiente" (>)
-                        next_btn = await self.page.query_selector('button:has-text(">"), [aria-label="Next"], [aria-label="Siguiente"]')
-                        if next_btn:
-                            await next_btn.click()
-                            await asyncio.sleep(3)
-                        else:
-                            # Intentar clic directo en número de página
-                            page_btn = await self.page.query_selector(f'button:has-text("{page_num}"), a:has-text("{page_num}")')
-                            if page_btn:
-                                await page_btn.click()
-                                await asyncio.sleep(3)
-                    except Exception as e:
-                        print(f"        Error navegando: {e}")
-                        break
+                print(f"      Página {page_num}/{max_pages}...")
+                await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                await asyncio.sleep(5)
                 
-                # Scroll en la página actual
-                for _ in range(5):
+                # En la primera página, obtener total de páginas
+                if page_num == 1:
+                    page_info = await self.page.evaluate('''() => {
+                        const text = document.body.innerText;
+                        // Buscar "Página X de Y" o "de XXXX" productos
+                        const pageMatch = text.match(/Página\\s+\\d+\\s+de\\s+(\\d+)/i);
+                        const totalMatch = text.match(/de\\s+(\\d+)\\s*$/m);
+                        return {
+                            totalPages: pageMatch ? parseInt(pageMatch[1]) : 1,
+                            totalProducts: totalMatch ? parseInt(totalMatch[1]) : 0
+                        };
+                    }''')
+                    total_pages = page_info.get('totalPages', 1)
+                    total_products = page_info.get('totalProducts', 0)
+                    print(f"      Total: {total_products} productos en {total_pages} páginas")
+                    
+                    # Ajustar max_pages si hay menos páginas disponibles
+                    actual_max_pages = min(max_pages, total_pages)
+                    if actual_max_pages < max_pages:
+                        print(f"      Ajustando a {actual_max_pages} páginas disponibles")
+                
+                # Scroll para cargar todo
+                for _ in range(3):
                     await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                     await asyncio.sleep(0.5)
                 await self.page.evaluate('window.scrollTo(0, 0)')
                 await asyncio.sleep(1)
                 
-                # Extraer productos de esta página
+                # Extraer productos
                 page_products = await self.extract_products_from_page()
                 
                 # Agregar solo productos nuevos
@@ -290,22 +281,27 @@ class DropKillerScraper:
                         all_products.append(p)
                         new_count += 1
                 
-                print(f"        Extraídos: {len(page_products)} ({new_count} nuevos)")
+                print(f"        Extraídos: {len(page_products)} ({new_count} nuevos) | Total: {len(all_products)}")
                 
                 # Si ya tenemos suficientes, parar
                 if len(all_products) >= max_products:
-                    print(f"      Alcanzado límite de {max_products} productos")
+                    print(f"      ✓ Alcanzado límite de {max_products} productos")
                     break
                 
-                # Si no se encontraron productos nuevos, probablemente llegamos al final
-                if new_count == 0 and page_num > 1:
-                    print(f"      Sin productos nuevos, terminando...")
+                # Si no se encontraron productos, probablemente llegamos al final
+                if len(page_products) == 0:
+                    print(f"      ✓ Sin más productos, terminando...")
+                    break
+                
+                # Verificar si llegamos a la última página
+                if page_num >= total_pages:
+                    print(f"      ✓ Última página alcanzada")
                     break
             
             # Guardar screenshot final
             await self.page.screenshot(path='debug_products.png')
             
-            # Filtrar por ventas mínimas
+            # Filtrar por ventas mínimas (por si acaso)
             all_products = [p for p in all_products if p.get('sales7d', 0) >= min_sales][:max_products]
             
             print(f"  [✓] Total: {len(all_products)} productos con ventas >= {min_sales}")
@@ -321,8 +317,9 @@ class DropKillerScraper:
             print(f"  [✗] Error: {e}")
             import traceback
             traceback.print_exc()
-            return all_products  # Retornar lo que tengamos
-    
+            return all_products
+
+
     async def close(self):
         if self.browser:
             await self.browser.close()
@@ -444,7 +441,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.0 (con paginación)")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.1 (paginación por URL)")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas a scrapear")
@@ -462,7 +459,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v4.0 (con paginación)")
+    print("  ESTRATEGAS IA - Scraper v4.1 (paginación por URL)")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
