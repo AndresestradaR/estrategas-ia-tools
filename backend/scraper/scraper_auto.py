@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v3.3
-Extracción basada en filas de tabla (más productos)
+Scraper Automático de DropKiller - Estrategas IA v3.4
+Filtros mejorados: excluir fechas y marcas sueltas
 """
 
 import os
@@ -154,7 +154,6 @@ class DropKillerScraper:
             
             print("      Extrayendo datos de filas...")
             
-            # Método: buscar cada fila que contiene "Ver detalle" y extraer sus datos
             products = await self.page.evaluate('''() => {
                 const products = [];
                 const seen = new Set();
@@ -165,10 +164,8 @@ class DropKillerScraper:
                     el.innerText && el.innerText.trim() === 'Ver detalle'
                 );
                 
-                console.log('Found Ver detalle buttons:', detailElements.length);
-                
                 for (const btn of detailElements) {
-                    // Subir en el DOM hasta encontrar la fila (tr o div contenedor)
+                    // Subir en el DOM hasta encontrar la fila
                     let row = btn.parentElement;
                     for (let i = 0; i < 10 && row; i++) {
                         if (row.tagName === 'TR' || 
@@ -192,7 +189,6 @@ class DropKillerScraper:
                     let providerPrice = 0;
                     let profit = 0;
                     
-                    // Filtrar precios válidos (no facturación total)
                     const validPrices = priceMatches
                         .map(p => parseInt(p.replace(/[\\.\\sCOP]/g, '')))
                         .filter(p => p >= 1000 && p <= 300000);
@@ -205,30 +201,46 @@ class DropKillerScraper:
                     let name = '';
                     
                     for (const line of lines) {
-                        // Debe ser texto razonable, no números ni metadata
-                        if (line.length >= 10 && line.length <= 80 &&
-                            !/^[\\d.,\\s]+$/.test(line) &&
-                            !/^[\\d.,]+\\s*COP/.test(line) &&
-                            !line.startsWith('Stock:') &&
-                            !line.startsWith('Proveedor:') &&
-                            !line.includes('Ver detalle') &&
-                            !line.includes('ID') &&
-                            !/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) {
-                            
-                            // Verificar que no sea un proveedor típico
-                            const lower = line.toLowerCase();
-                            const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
-                                                   'group', 'china', 'bodeguita', 'inversiones'];
-                            if (providerWords.some(w => lower.includes(w))) continue;
-                            
-                            name = line;
-                            break;
-                        }
+                        // FILTROS para detectar nombres válidos
+                        
+                        // Excluir fechas (DD/MM/YYYY o similares)
+                        if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
+                        
+                        // Excluir líneas que son solo números
+                        if (/^[\\d.,\\s]+$/.test(line)) continue;
+                        
+                        // Excluir precios
+                        if (/^[\\d.,]+\\s*COP/.test(line)) continue;
+                        
+                        // Excluir metadata
+                        if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
+                        if (line.includes('Ver detalle') || line.includes('ID')) continue;
+                        if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
+                        
+                        // Excluir líneas muy cortas (< 10 chars) - probablemente marcas
+                        if (line.length < 10) continue;
+                        
+                        // Excluir líneas muy largas
+                        if (line.length > 80) continue;
+                        
+                        // Excluir proveedores típicos
+                        const lower = line.toLowerCase();
+                        const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
+                                               'group', 'china', 'bodeguita', 'inversiones',
+                                               'fragance', 'glow', 'perfumeria'];
+                        if (providerWords.some(w => lower.includes(w))) continue;
+                        
+                        // Excluir si es una sola palabra (marca suelta)
+                        const words = line.split(/\\s+/);
+                        if (words.length === 1 && line.length < 15) continue;
+                        
+                        name = line;
+                        break;
                     }
                     
                     if (!name || providerPrice === 0) continue;
                     
-                    // Extraer ventas: números después del último COP que no sean stock
+                    // Extraer ventas
                     const textAfterPrices = text.split('COP').slice(-1)[0] || '';
                     const nums = textAfterPrices.match(/\\b(\\d{1,4})\\b/g) || [];
                     const salesCandidates = nums.map(n => parseInt(n))
@@ -397,7 +409,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.3")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.4")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
@@ -414,7 +426,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v3.3")
+    print("  ESTRATEGAS IA - Scraper v3.4")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
