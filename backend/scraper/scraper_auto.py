@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.4
-Debug mode para ver estructura de filas
+Scraper Automático de DropKiller - Estrategas IA v4.5
+Debug mode que imprime en terminal el texto de las filas
 """
 
 import os
@@ -131,61 +131,56 @@ class DropKillerScraper:
             print(f"  [✗] Error: {e}")
             return False
     
-    async def extract_products_from_page(self) -> List[Dict]:
-        """Extrae productos - DEBUG VERSION para ver estructura"""
-        debug_mode = self.debug
-        
+    async def extract_raw_rows(self, limit: int = 3) -> List[str]:
+        """Extrae el texto raw de las primeras filas para debug"""
         return await self.page.evaluate(f'''() => {{
-            const products = [];
-            const seen = new Set();
-            const debugMode = {str(debug_mode).lower()};
-            
-            // Buscar todas las filas de la tabla que contienen productos
-            // En DropKiller, cada fila tiene: imagen, nombre+proveedor+stock, banderas, ID, precio, ganancia, ventas, botón
-            const rows = document.querySelectorAll('tr, [role="row"]');
-            
-            if (debugMode) {{
-                console.log('Total rows found:', rows.length);
-            }}
-            
-            // También buscar por Ver detalle
+            const rows = [];
             const buttons = document.querySelectorAll('button');
             const detailButtons = Array.from(buttons).filter(el => 
                 el.innerText && el.innerText.trim() === 'Ver detalle'
             );
             
-            if (debugMode) {{
-                console.log('Ver detalle buttons found:', detailButtons.length);
-            }}
-            
-            for (const btn of detailButtons) {{
-                // Encontrar el contenedor de la fila
-                let row = btn.closest('tr') || btn.parentElement;
-                
-                // Si no es tr, subir hasta encontrar un contenedor con todos los datos
-                if (!row || row.tagName !== 'TR') {{
-                    row = btn.parentElement;
-                    for (let i = 0; i < 10 && row; i++) {{
-                        const text = row.innerText || '';
-                        if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {{
-                            break;
-                        }}
-                        row = row.parentElement;
+            for (let i = 0; i < Math.min(detailButtons.length, {limit}); i++) {{
+                const btn = detailButtons[i];
+                let row = btn.parentElement;
+                for (let j = 0; j < 10 && row; j++) {{
+                    const text = row.innerText || '';
+                    if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {{
+                        break;
                     }}
+                    row = row.parentElement;
                 }}
+                if (row) {{
+                    rows.push(row.innerText);
+                }}
+            }}
+            return rows;
+        }}''')
+    
+    async def extract_products_from_page(self) -> List[Dict]:
+        """Extrae productos de la página"""
+        return await self.page.evaluate('''() => {
+            const products = [];
+            const seen = new Set();
+            
+            const buttons = document.querySelectorAll('button');
+            const detailButtons = Array.from(buttons).filter(el => 
+                el.innerText && el.innerText.trim() === 'Ver detalle'
+            );
+            
+            for (const btn of detailButtons) {
+                let row = btn.parentElement;
+                for (let i = 0; i < 10 && row; i++) {
+                    const text = row.innerText || '';
+                    if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {
+                        break;
+                    }
+                    row = row.parentElement;
+                }
                 
                 if (!row) continue;
                 
                 const text = row.innerText || '';
-                
-                if (debugMode && products.length < 3) {{
-                    console.log('=== ROW TEXT ===');
-                    console.log(text);
-                    console.log('================');
-                }}
-                
-                // Buscar todos los números en el texto
-                // Estructura esperada: nombre, proveedor, Stock: XXX, ID, XX.XXX COP, XX.XXX COP, VENTAS, Ver detalle
                 
                 // Extraer Stock
                 const stockMatch = text.match(/Stock:\\s*([\\d.,]+)/i);
@@ -195,48 +190,37 @@ class DropKillerScraper:
                 const pricePattern = /([\\d.]+)\\s*COP/g;
                 const prices = [];
                 let match;
-                while ((match = pricePattern.exec(text)) !== null) {{
+                while ((match = pricePattern.exec(text)) !== null) {
                     const price = parseInt(match[1].replace(/\\./g, ''));
-                    if (price >= 1000 && price <= 500000) {{
+                    if (price >= 1000 && price <= 500000) {
                         prices.push(price);
-                    }}
-                }}
+                    }
+                }
                 
                 let providerPrice = prices.length > 0 ? prices[0] : 0;
                 let profit = prices.length > 1 ? prices[1] : 0;
                 
-                // VENTAS: El número después del último COP pero antes de "Ver detalle"
-                const lastCOPMatch = text.match(/COP[^C]*$/);
+                // VENTAS: Buscar el número que está justo antes de "Ver detalle"
+                // El patrón es: "XX.XXX COP\\nXX.XXX COP\\n[VENTAS]\\nVer detalle"
+                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                 let sales7d = 0;
                 
-                if (lastCOPMatch) {{
-                    // Buscar el texto entre el último COP y "Ver detalle"
-                    const afterLastCOP = text.substring(text.lastIndexOf('COP') + 3);
-                    const beforeVerDetalle = afterLastCOP.split('Ver detalle')[0];
-                    
-                    if (debugMode && products.length < 3) {{
-                        console.log('After last COP:', beforeVerDetalle);
-                    }}
-                    
-                    // Buscar números en este segmento
-                    // El formato puede ser "49" o "1.502" (con punto como separador de miles)
-                    const salesMatch = beforeVerDetalle.match(/([\\d.]+)/);
-                    if (salesMatch) {{
-                        // Remover puntos (separador de miles) y convertir
-                        sales7d = parseInt(salesMatch[1].replace(/\\./g, '')) || 0;
-                    }}
-                }}
-                
-                if (debugMode && products.length < 3) {{
-                    console.log('Extracted sales7d:', sales7d);
-                }}
+                // Encontrar el índice de "Ver detalle"
+                const verDetalleIndex = lines.findIndex(l => l === 'Ver detalle');
+                if (verDetalleIndex > 0) {
+                    // El número de ventas está justo antes de "Ver detalle"
+                    const salesLine = lines[verDetalleIndex - 1];
+                    // Puede ser "49" o "1.502" (con punto como separador de miles)
+                    const salesNum = salesLine.replace(/\\./g, '').replace(/,/g, '');
+                    if (/^\\d+$/.test(salesNum)) {
+                        sales7d = parseInt(salesNum);
+                    }
+                }
                 
                 // Buscar nombre del producto
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                 let name = '';
-                
-                for (const line of lines) {{
-                    if (/^\\d{{1,2}}[\\/-]\\d{{1,2}}[\\/-]\\d{{2,4}}$/.test(line)) continue;
+                for (const line of lines) {
+                    if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
                     if (/^[\\d.,\\s]+$/.test(line)) continue;
                     if (/COP/.test(line)) continue;
                     if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
@@ -259,7 +243,7 @@ class DropKillerScraper:
                     
                     name = line;
                     break;
-                }}
+                }
                 
                 if (!name || providerPrice === 0) continue;
                 
@@ -267,7 +251,7 @@ class DropKillerScraper:
                 if (seen.has(uniqueKey)) continue;
                 seen.add(uniqueKey);
                 
-                products.push({{
+                products.push({
                     name: name.substring(0, 60),
                     providerPrice,
                     profit,
@@ -275,14 +259,14 @@ class DropKillerScraper:
                     sales7d,
                     sales30d: 0,
                     externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
-                }});
-            }}
+                });
+            }
             
             return products;
-        }}''')
+        }''')
     
     async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100, max_pages: int = 5) -> List[Dict]:
-        """Extrae productos de DropKiller con paginación por URL"""
+        """Extrae productos de DropKiller"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
@@ -304,6 +288,16 @@ class DropKillerScraper:
                     await asyncio.sleep(0.5)
                 await self.page.evaluate('window.scrollTo(0, 0)')
                 await asyncio.sleep(1)
+                
+                # Debug: mostrar texto raw de primeras filas
+                if self.debug and page_num == 1:
+                    raw_rows = await self.extract_raw_rows(3)
+                    print("\n\n[DEBUG] Texto raw de primeras 3 filas:")
+                    for i, row_text in enumerate(raw_rows):
+                        print(f"\n--- FILA {i+1} ---")
+                        print(row_text[:500])
+                        print("--- FIN FILA ---")
+                    print()
                 
                 page_products = await self.extract_products_from_page()
                 
@@ -351,7 +345,6 @@ class DropKillerScraper:
             import traceback
             traceback.print_exc()
             return all_products
-
 
     async def close(self):
         if self.browser:
@@ -474,14 +467,14 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.4")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.5")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas")
     parser.add_argument("--country", default="CO", help="País")
     parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     parser.add_argument("--visible", action="store_true", help="Mostrar navegador")
-    parser.add_argument("--debug", action="store_true", help="Modo debug - muestra estructura de filas")
+    parser.add_argument("--debug", action="store_true", help="Modo debug")
     args = parser.parse_args()
     
     if not DROPKILLER_EMAIL or not DROPKILLER_PASSWORD:
@@ -493,7 +486,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print(f"  ESTRATEGAS IA - Scraper v4.4 {'(DEBUG)' if args.debug else ''}")
+    print(f"  ESTRATEGAS IA - Scraper v4.5 {'(DEBUG)' if args.debug else ''}")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
@@ -520,11 +513,6 @@ async def main():
             return
         
         stats["scraped"] = len(products)
-        
-        if args.debug:
-            print("\n[DEBUG] Primeros 5 productos extraídos:")
-            for p in products[:5]:
-                print(f"  {p['name'][:40]} | Precio:{p['providerPrice']} | Stock:{p['stock']} | V7d:{p['sales7d']}")
         
         print(f"\n[FASE 3] Análisis de {len(products)} productos\n")
         
