@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.6
-Extracción correcta: ventas están entre ganancia COP y facturación COP
+Scraper Automático de DropKiller - Estrategas IA v5.0
+NUEVO: Extracción de UUID + API histórico 6 meses + Análisis de tendencia real
 """
 
 import os
@@ -11,8 +11,9 @@ import re
 import argparse
 import asyncio
 import requests
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
@@ -31,6 +32,33 @@ DROPKILLER_COUNTRIES = {
     "EC": "82811e8b-d17d-4ab9-847a-fa925785d566",
 }
 
+# Clasificación de tendencias
+TREND_PATTERNS = {
+    "DESPEGANDO": "🚀 Producto nuevo con crecimiento explosivo",
+    "CRECIMIENTO_SOSTENIDO": "📈 Crecimiento constante por varios meses",
+    "ESTABLE": "📊 Ventas estables, mercado maduro",
+    "DECAYENDO": "📉 Pasó su mejor momento",
+    "VOLATIL": "🎢 Picos impredecibles",
+    "NUEVO_SIN_DATOS": "🆕 Muy nuevo para evaluar tendencia"
+}
+
+
+# ============== DATA CLASSES ==============
+@dataclass
+class ProductHistory:
+    """Histórico de un producto"""
+    uuid: str
+    name: str
+    created_at: Optional[str]
+    total_sold: int
+    avg_daily: float
+    history: List[Dict]
+    trend_pattern: str
+    trend_score: float
+    growth_rate_7d: float
+    growth_rate_30d: float
+    is_growing: bool
+    
 
 # ============== SUPABASE ==============
 class SupabaseClient:
@@ -50,7 +78,156 @@ class SupabaseClient:
         return response.status_code in [200, 201, 204]
 
 
-# ============== DROPKILLER SCRAPER ==============
+# ============== TREND ANALYZER ==============
+class TrendAnalyzer:
+    """Analiza histórico de ventas para determinar tendencia"""
+    
+    @staticmethod
+    def analyze_history(history: List[Dict], created_at: str = None) -> Dict:
+        """
+        Analiza el histórico y determina el patrón de tendencia
+        
+        history: Lista de {"date": "YYYY-MM-DD", "soldUnits": N, "stock": N, ...}
+        """
+        if not history:
+            return {
+                "trend_pattern": "NUEVO_SIN_DATOS",
+                "trend_score": 0,
+                "growth_rate_7d": 0,
+                "growth_rate_30d": 0,
+                "is_growing": False,
+                "avg_daily": 0,
+                "total_sold": 0
+            }
+        
+        # Filtrar días con ventas válidas (soldUnits > 0 o tiene externalProductId)
+        valid_days = [d for d in history if d.get('soldUnits', 0) > 0 or d.get('externalProductId')]
+        
+        if len(valid_days) < 7:
+            return {
+                "trend_pattern": "NUEVO_SIN_DATOS",
+                "trend_score": 0,
+                "growth_rate_7d": 0,
+                "growth_rate_30d": 0,
+                "is_growing": False,
+                "avg_daily": 0,
+                "total_sold": sum(d.get('soldUnits', 0) for d in history)
+            }
+        
+        # Ordenar por fecha
+        sorted_history = sorted(history, key=lambda x: x.get('date', ''))
+        
+        # Calcular ventas totales y promedio
+        total_sold = sum(d.get('soldUnits', 0) for d in sorted_history)
+        days_active = len([d for d in sorted_history if d.get('soldUnits', 0) > 0])
+        avg_daily = total_sold / max(days_active, 1)
+        
+        # Dividir en períodos
+        last_7_days = sorted_history[-7:] if len(sorted_history) >= 7 else sorted_history
+        last_30_days = sorted_history[-30:] if len(sorted_history) >= 30 else sorted_history
+        prev_30_days = sorted_history[-60:-30] if len(sorted_history) >= 60 else []
+        first_30_days = sorted_history[:30] if len(sorted_history) >= 30 else sorted_history
+        
+        # Calcular ventas por período
+        sales_7d = sum(d.get('soldUnits', 0) for d in last_7_days)
+        sales_30d = sum(d.get('soldUnits', 0) for d in last_30_days)
+        sales_prev_30d = sum(d.get('soldUnits', 0) for d in prev_30_days) if prev_30_days else 0
+        sales_first_30d = sum(d.get('soldUnits', 0) for d in first_30_days)
+        
+        # Calcular promedios por período
+        avg_7d = sales_7d / 7
+        avg_30d = sales_30d / min(len(last_30_days), 30)
+        avg_prev_30d = sales_prev_30d / 30 if prev_30_days else 0
+        
+        # Calcular ratios de crecimiento
+        # Ratio 7d vs promedio 30d (ajustado a semana)
+        expected_7d = avg_30d * 7
+        growth_rate_7d = ((sales_7d - expected_7d) / expected_7d * 100) if expected_7d > 0 else 0
+        
+        # Ratio 30d vs 30d anterior
+        growth_rate_30d = ((sales_30d - sales_prev_30d) / sales_prev_30d * 100) if sales_prev_30d > 0 else 100
+        
+        # Determinar patrón de tendencia
+        trend_pattern, trend_score = TrendAnalyzer._classify_pattern(
+            avg_7d, avg_30d, avg_prev_30d,
+            growth_rate_7d, growth_rate_30d,
+            total_sold, days_active, created_at
+        )
+        
+        return {
+            "trend_pattern": trend_pattern,
+            "trend_score": trend_score,
+            "growth_rate_7d": round(growth_rate_7d, 1),
+            "growth_rate_30d": round(growth_rate_30d, 1),
+            "is_growing": growth_rate_7d > 10 or growth_rate_30d > 20,
+            "avg_daily": round(avg_daily, 1),
+            "total_sold": total_sold,
+            "sales_7d": sales_7d,
+            "sales_30d": sales_30d,
+            "sales_prev_30d": sales_prev_30d
+        }
+    
+    @staticmethod
+    def _classify_pattern(avg_7d, avg_30d, avg_prev_30d, growth_7d, growth_30d, total_sold, days_active, created_at) -> tuple:
+        """Clasifica el patrón de tendencia"""
+        
+        # Calcular edad del producto
+        age_days = days_active
+        if created_at:
+            try:
+                created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                age_days = (datetime.now(created.tzinfo) - created).days
+            except:
+                pass
+        
+        # 1. DESPEGANDO - Producto nuevo (<90 días) con crecimiento explosivo
+        if age_days < 90 and growth_7d > 50 and avg_7d > 10:
+            return "DESPEGANDO", 95
+        
+        if age_days < 90 and growth_30d > 100 and avg_7d > 5:
+            return "DESPEGANDO", 90
+        
+        # 2. CRECIMIENTO SOSTENIDO - Más de 90 días y sigue creciendo
+        if age_days >= 90 and growth_30d > 30 and growth_7d > 0:
+            return "CRECIMIENTO_SOSTENIDO", 85
+        
+        if age_days >= 60 and growth_30d > 50 and avg_7d > 20:
+            return "CRECIMIENTO_SOSTENIDO", 80
+        
+        # 3. ESTABLE - Ventas constantes sin mucha variación
+        if abs(growth_7d) < 20 and abs(growth_30d) < 30 and avg_7d > 5:
+            if avg_7d > 30:
+                return "ESTABLE", 70  # Estable con buen volumen
+            return "ESTABLE", 60
+        
+        # 4. DECAYENDO - Tendencia negativa
+        if growth_7d < -30 and growth_30d < -20:
+            return "DECAYENDO", 20
+        
+        if growth_30d < -40:
+            return "DECAYENDO", 25
+        
+        # 5. VOLATIL - Cambios bruscos sin patrón claro
+        if abs(growth_7d) > 50 and abs(growth_30d) > 50:
+            # Alta volatilidad pero con volumen
+            if avg_7d > 20:
+                return "VOLATIL", 50
+            return "VOLATIL", 35
+        
+        # 6. NUEVO SIN DATOS - Muy pocos datos para evaluar
+        if days_active < 14 or total_sold < 20:
+            return "NUEVO_SIN_DATOS", 40
+        
+        # Default: Basado en si crece o no
+        if growth_7d > 0:
+            return "CRECIMIENTO_SOSTENIDO", 65
+        elif growth_7d < -10:
+            return "DECAYENDO", 35
+        else:
+            return "ESTABLE", 55
+
+
+# ============== DROPKILLER SCRAPER v5 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -58,6 +235,7 @@ class DropKillerScraper:
         self.browser = None
         self.page = None
         self.debug = debug
+        self.session_cookies = None
     
     async def init_browser(self, headless: bool = True):
         from playwright.async_api import async_playwright
@@ -120,10 +298,14 @@ class DropKillerScraper:
             try:
                 await self.page.wait_for_url('**/dashboard**', timeout=30000)
                 print("  [✓] Login exitoso")
+                
+                # Guardar cookies de sesión
+                self.session_cookies = await self.context.cookies()
                 return True
             except:
                 if '/dashboard' in self.page.url:
                     print("  [✓] Login exitoso")
+                    self.session_cookies = await self.context.cookies()
                     return True
                 return False
             
@@ -131,45 +313,25 @@ class DropKillerScraper:
             print(f"  [✗] Error: {e}")
             return False
     
-    async def extract_raw_rows(self, limit: int = 3) -> List[str]:
-        """Extrae el texto raw de las primeras filas para debug"""
-        return await self.page.evaluate(f'''() => {{
-            const rows = [];
-            const buttons = document.querySelectorAll('button');
-            const detailButtons = Array.from(buttons).filter(el => 
-                el.innerText && el.innerText.trim() === 'Ver detalle'
-            );
-            
-            for (let i = 0; i < Math.min(detailButtons.length, {limit}); i++) {{
-                const btn = detailButtons[i];
-                let row = btn.parentElement;
-                for (let j = 0; j < 10 && row; j++) {{
-                    const text = row.innerText || '';
-                    if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {{
-                        break;
-                    }}
-                    row = row.parentElement;
-                }}
-                if (row) {{
-                    rows.push(row.innerText);
-                }}
-            }}
-            return rows;
-        }}''')
-    
-    async def extract_products_from_page(self) -> List[Dict]:
-        """Extrae productos - estructura correcta de DropKiller"""
+    async def extract_products_with_uuid(self) -> List[Dict]:
+        """Extrae productos incluyendo el UUID del enlace Ver detalle"""
         return await self.page.evaluate('''() => {
             const products = [];
             const seen = new Set();
             
-            const buttons = document.querySelectorAll('button');
-            const detailButtons = Array.from(buttons).filter(el => 
-                el.innerText && el.innerText.trim() === 'Ver detalle'
-            );
+            // Buscar todos los enlaces "Ver detalle"
+            const links = document.querySelectorAll('a[href*="/dashboard/tracking/detail/"]');
             
-            for (const btn of detailButtons) {
-                let row = btn.parentElement;
+            for (const link of links) {
+                // Extraer UUID del href
+                const href = link.getAttribute('href') || '';
+                const uuidMatch = href.match(/detail\\/([a-f0-9-]{36})/);
+                if (!uuidMatch) continue;
+                
+                const uuid = uuidMatch[1];
+                
+                // Buscar la fila del producto
+                let row = link.parentElement;
                 for (let i = 0; i < 10 && row; i++) {
                     const text = row.innerText || '';
                     if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {
@@ -187,9 +349,6 @@ class DropKillerScraper:
                 const stockMatch = text.match(/Stock:\\s*([\\d.,]+)/i);
                 const stock = stockMatch ? parseInt(stockMatch[1].replace(/[.,]/g, '')) : 0;
                 
-                // Estructura de DropKiller:
-                // [nombre, Proveedor:, proveedor, Stock: X, ID, PRECIO COP, GANANCIA COP, V7D, V30D, FACT7D COP, FACT30D COP, fecha, categoria, Ver detalle]
-                
                 // Encontrar índices de líneas con COP
                 const copIndices = [];
                 for (let i = 0; i < lines.length; i++) {
@@ -198,16 +357,8 @@ class DropKillerScraper:
                     }
                 }
                 
-                // Necesitamos al menos 4 COP (precio, ganancia, fact7d, fact30d)
                 if (copIndices.length < 4) continue;
                 
-                // Precio proveedor = primer COP
-                // Ganancia = segundo COP
-                // Las ventas están ENTRE el segundo COP y el tercer COP
-                const precioLine = lines[copIndices[0]];
-                const gananciaLine = lines[copIndices[1]];
-                
-                // Extraer precio y ganancia
                 const extractPrice = (line) => {
                     const match = line.match(/([\\d.]+)\\s*COP/);
                     if (match) {
@@ -216,11 +367,10 @@ class DropKillerScraper:
                     return 0;
                 };
                 
-                const providerPrice = extractPrice(precioLine);
-                const profit = extractPrice(gananciaLine);
+                const providerPrice = extractPrice(lines[copIndices[0]]);
+                const profit = extractPrice(lines[copIndices[1]]);
                 
-                // Ventas 7d y 30d están justo después del segundo COP
-                // Son las líneas entre copIndices[1] y copIndices[2]
+                // Ventas 7d y 30d
                 let sales7d = 0;
                 let sales30d = 0;
                 
@@ -230,7 +380,6 @@ class DropKillerScraper:
                 const salesLines = [];
                 for (let i = salesStartIndex; i < salesEndIndex; i++) {
                     const line = lines[i];
-                    // Solo números (pueden tener . como separador de miles)
                     const cleaned = line.replace(/\\./g, '');
                     if (/^\\d+$/.test(cleaned)) {
                         salesLines.push(parseInt(cleaned));
@@ -240,10 +389,9 @@ class DropKillerScraper:
                 if (salesLines.length >= 1) sales7d = salesLines[0];
                 if (salesLines.length >= 2) sales30d = salesLines[1];
                 
-                // Buscar nombre del producto (primera línea válida)
+                // Buscar nombre del producto
                 let name = '';
                 for (const line of lines) {
-                    // Excluir líneas no válidas
                     if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
                     if (/^[\\d.,\\s]+$/.test(line)) continue;
                     if (/COP/.test(line)) continue;
@@ -252,7 +400,6 @@ class DropKillerScraper:
                     if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
                     if (line.length < 5 || line.length > 80) continue;
                     
-                    // Excluir nombres de proveedores conocidos
                     const lower = line.toLowerCase();
                     const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
                                            'group', 'china', 'bodeguita', 'inversiones',
@@ -263,7 +410,6 @@ class DropKillerScraper:
                                            'toons mayorista', 'oh homie'];
                     if (providerWords.some(w => lower.includes(w))) continue;
                     
-                    // Excluir categorías comunes
                     const categories = ['herramientas', 'belleza', 'deportes', 'hogar', 'salud', 
                                        'tecnologia', 'moda', 'mascotas', 'bebes', 'cocina'];
                     if (categories.includes(lower)) continue;
@@ -274,26 +420,84 @@ class DropKillerScraper:
                 
                 if (!name || providerPrice === 0) continue;
                 
-                const uniqueKey = name.substring(0, 25) + '_' + providerPrice;
-                if (seen.has(uniqueKey)) continue;
-                seen.add(uniqueKey);
+                // Usar UUID como identificador único
+                if (seen.has(uuid)) continue;
+                seen.add(uuid);
                 
                 products.push({
+                    uuid: uuid,
                     name: name.substring(0, 60),
                     providerPrice,
                     profit,
                     stock,
                     sales7d,
                     sales30d,
-                    externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
+                    externalId: uuid
                 });
             }
             
             return products;
         }''')
     
+    async def get_product_history(self, uuid: str, months: int = 6) -> Optional[Dict]:
+        """
+        Obtiene el histórico de un producto usando la API de DropKiller
+        
+        uuid: UUID del producto
+        months: Cantidad de meses de histórico (default 6)
+        """
+        try:
+            # Calcular rango de fechas
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=months * 30)
+            date_range = f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+            
+            # Preparar el request body
+            body = json.dumps([uuid, date_range])
+            
+            # Hacer la llamada usando la página de Playwright (mantiene cookies)
+            result = await self.page.evaluate('''async (params) => {
+                const [uuid, dateRange] = params;
+                
+                try {
+                    const response = await fetch(`/dashboard/tracking/detail/${uuid}?platform=dropi`, {
+                        method: 'POST',
+                        headers: {
+                            'accept': 'text/x-component',
+                            'content-type': 'text/plain;charset=UTF-8',
+                            'next-action': '7ff80d9301fb1d1d96845742009470be0442d3283f'
+                        },
+                        body: JSON.stringify([uuid, dateRange])
+                    });
+                    
+                    const text = await response.text();
+                    
+                    // La respuesta viene en formato "0:{...}\\n1:{...}"
+                    // Buscar la línea que contiene los datos
+                    const lines = text.split('\\n');
+                    for (const line of lines) {
+                        if (line.startsWith('1:')) {
+                            const jsonStr = line.substring(2);
+                            return JSON.parse(jsonStr);
+                        }
+                    }
+                    
+                    return null;
+                } catch (e) {
+                    console.error('Error fetching history:', e);
+                    return null;
+                }
+            }''', [uuid, date_range])
+            
+            return result
+            
+        except Exception as e:
+            if self.debug:
+                print(f"      [!] Error obteniendo histórico {uuid}: {e}")
+            return None
+    
     async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100, max_pages: int = 5) -> List[Dict]:
-        """Extrae productos de DropKiller"""
+        """Extrae productos de DropKiller con UUID"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
@@ -316,22 +520,13 @@ class DropKillerScraper:
                 await self.page.evaluate('window.scrollTo(0, 0)')
                 await asyncio.sleep(1)
                 
-                # Debug: mostrar texto raw de primeras filas
-                if self.debug and page_num == 1:
-                    raw_rows = await self.extract_raw_rows(3)
-                    print("\n\n[DEBUG] Texto raw de primeras 3 filas:")
-                    for i, row_text in enumerate(raw_rows):
-                        print(f"\n--- FILA {i+1} ---")
-                        print(row_text[:600])
-                        print("--- FIN FILA ---")
-                    print()
-                
-                page_products = await self.extract_products_from_page()
+                # Extraer productos CON UUID
+                page_products = await self.extract_products_with_uuid()
                 
                 new_count = 0
                 for p in page_products:
-                    pid = p.get('externalId', '')
-                    if pid not in seen_ids:
+                    pid = p.get('uuid', '')
+                    if pid and pid not in seen_ids:
                         seen_ids.add(pid)
                         all_products.append(p)
                         new_count += 1
@@ -354,16 +549,9 @@ class DropKillerScraper:
                     print(f"      ✓ Página vacía, terminando...")
                     break
             
-            await self.page.screenshot(path='debug_products.png')
-            
             all_products = [p for p in all_products if p.get('sales7d', 0) >= min_sales][:max_products]
             
-            print(f"  [✓] Total: {len(all_products)} productos con ventas >= {min_sales}")
-            
-            if all_products:
-                print(f"      Ejemplos:")
-                for p in all_products[:5]:
-                    print(f"        - {p['name'][:40]} | ${p['providerPrice']:,} | V7d:{p['sales7d']} V30d:{p['sales30d']}")
+            print(f"  [✓] Total: {len(all_products)} productos con UUID extraído")
             
             return all_products
             
@@ -372,6 +560,80 @@ class DropKillerScraper:
             import traceback
             traceback.print_exc()
             return all_products
+    
+    async def analyze_product_trends(self, products: List[Dict], max_history: int = 50) -> List[Dict]:
+        """
+        Obtiene y analiza el histórico de productos para determinar tendencias
+        
+        products: Lista de productos con UUID
+        max_history: Máximo de productos a analizar histórico (para no sobrecargar)
+        """
+        print(f"\n  [3] Analizando histórico de {min(len(products), max_history)} productos...")
+        
+        analyzer = TrendAnalyzer()
+        analyzed = []
+        
+        # Ordenar por ventas para priorizar los mejores
+        sorted_products = sorted(products, key=lambda x: x.get('sales7d', 0), reverse=True)
+        
+        for i, product in enumerate(sorted_products[:max_history], 1):
+            uuid = product.get('uuid')
+            if not uuid:
+                continue
+            
+            name = product.get('name', 'N/A')[:30]
+            print(f"      [{i}/{min(len(products), max_history)}] {name}...", end=" ", flush=True)
+            
+            # Obtener histórico
+            history_data = await self.get_product_history(uuid)
+            
+            if not history_data or 'data' not in history_data:
+                print("Sin histórico")
+                product['trend_pattern'] = 'NUEVO_SIN_DATOS'
+                product['trend_score'] = 40
+                product['is_growing'] = False
+                analyzed.append(product)
+                continue
+            
+            data = history_data['data']
+            history = data.get('history', [])
+            created_at = data.get('createdAt')
+            
+            # Analizar tendencia
+            trend_result = analyzer.analyze_history(history, created_at)
+            
+            # Agregar datos al producto
+            product['created_at'] = created_at
+            product['total_sold'] = data.get('totalSoldUnits', 0)
+            product['trend_pattern'] = trend_result['trend_pattern']
+            product['trend_score'] = trend_result['trend_score']
+            product['growth_rate_7d'] = trend_result['growth_rate_7d']
+            product['growth_rate_30d'] = trend_result['growth_rate_30d']
+            product['is_growing'] = trend_result['is_growing']
+            product['avg_daily'] = trend_result['avg_daily']
+            product['provider_name'] = data.get('provider', {}).get('name', 'N/A')
+            product['category'] = data.get('baseCategory', {}).get('name', 'N/A')
+            
+            pattern = trend_result['trend_pattern']
+            score = trend_result['trend_score']
+            growth = trend_result['growth_rate_7d']
+            
+            emoji = "🚀" if pattern == "DESPEGANDO" else "📈" if pattern == "CRECIMIENTO_SOSTENIDO" else "📊" if pattern == "ESTABLE" else "📉" if pattern == "DECAYENDO" else "🎢"
+            print(f"{emoji} {pattern} (Score:{score}, Growth7d:{growth:+.0f}%)")
+            
+            analyzed.append(product)
+            
+            # Pequeña pausa para no sobrecargar
+            await asyncio.sleep(0.5)
+        
+        # Agregar productos no analizados
+        for product in sorted_products[max_history:]:
+            product['trend_pattern'] = 'NO_ANALIZADO'
+            product['trend_score'] = 50
+            product['is_growing'] = None
+            analyzed.append(product)
+        
+        return analyzed
 
     async def close(self):
         if self.browser:
@@ -380,7 +642,7 @@ class DropKillerScraper:
             await self.playwright.stop()
 
 
-# ============== ANALYZER ==============
+# ============== MARGIN CALCULATOR ==============
 def calculate_margin(cost_price: int) -> Dict:
     if cost_price <= 0:
         cost_price = 35000
@@ -408,98 +670,14 @@ def calculate_margin(cost_price: int) -> Dict:
     }
 
 
-def calculate_viability(product: Dict, margin: Dict) -> tuple:
-    score = 0
-    reasons = []
-    
-    recent_sales = product.get('sales7d', 0)
-    stock = product.get('stock', 0)
-    estimated_stock = max(stock, recent_sales * 2) if recent_sales > 0 else stock
-    
-    if recent_sales >= 100:
-        score += 40
-        reasons.append(f"🔥 Ventas excelentes: {recent_sales}/7d")
-    elif recent_sales >= 50:
-        score += 35
-        reasons.append(f"Ventas muy altas: {recent_sales}/7d")
-    elif recent_sales >= 30:
-        score += 28
-        reasons.append(f"Ventas altas: {recent_sales}/7d")
-    elif recent_sales >= 15:
-        score += 20
-        reasons.append(f"Ventas buenas: {recent_sales}/7d")
-    elif recent_sales >= 5:
-        score += 12
-        reasons.append(f"Ventas moderadas: {recent_sales}/7d")
-    else:
-        reasons.append(f"Sin ventas: {recent_sales}/7d")
-    
-    roi = margin.get("roi", 0)
-    if roi >= 25:
-        score += 25
-        reasons.append(f"ROI excelente: {roi}%")
-    elif roi >= 15:
-        score += 18
-        reasons.append(f"ROI bueno: {roi}%")
-    elif roi > 0:
-        score += 8
-        reasons.append(f"ROI bajo: {roi}%")
-    
-    score += 12
-    
-    if estimated_stock >= 50:
-        score += 15
-        reasons.append(f"Stock: {estimated_stock}")
-    elif estimated_stock > 0:
-        score += 8
-    
-    verdict = "EXCELENTE" if score >= 70 else "VIABLE" if score >= 50 else "ARRIESGADO" if score >= 30 else "NO_RECOMENDADO"
-    
-    return score, reasons, verdict, recent_sales, estimated_stock
-
-
-def analyze_with_claude(product: Dict, margin: Dict) -> Dict:
-    if not ANTHROPIC_API_KEY:
-        return {"recommendation": "REVISAR", "unused_angles": [], "optimal_price": margin["optimal_price"]}
-    
-    prompt = f"""Analiza este producto dropshipping Colombia:
-
-Producto: {product.get('name', 'N/A')}
-Costo: ${margin['cost_price']:,} COP
-Precio óptimo: ${margin['optimal_price']:,} COP ({margin['multiplier']}x)
-Margen: ${margin['net_margin']:,} COP
-ROI: {margin['roi']}%
-Ventas 7d: {product.get('sales7d', 0)}
-
-JSON solo:
-{{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2"], "key_insight": "oracion"}}"""
-
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-20250514", "max_tokens": 400, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30
-        )
-        if response.status_code == 200:
-            text = response.json()["content"][0]["text"]
-            if "```" in text:
-                text = text.split("```")[1].replace("json", "").strip()
-            return json.loads(text)
-    except:
-        pass
-    
-    return {"recommendation": "REVISAR", "unused_angles": [], "optimal_price": margin["optimal_price"]}
-
-
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.6")
-    parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
-    parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v5.0 con Análisis de Tendencia")
+    parser.add_argument("--min-sales", type=int, default=30, help="Ventas mínimas 7d")
+    parser.add_argument("--max-products", type=int, default=100, help="Máx productos a extraer")
+    parser.add_argument("--max-history", type=int, default=50, help="Máx productos para análisis de histórico")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas")
     parser.add_argument("--country", default="CO", help="País")
-    parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     parser.add_argument("--visible", action="store_true", help="Mostrar navegador")
     parser.add_argument("--debug", action="store_true", help="Modo debug")
     args = parser.parse_args()
@@ -508,21 +686,17 @@ async def main():
         print("ERROR: Falta DROPKILLER_EMAIL o DROPKILLER_PASSWORD en .env")
         sys.exit(1)
     
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("ERROR: Falta SUPABASE_URL o SUPABASE_KEY en .env")
-        sys.exit(1)
-    
-    print("=" * 65)
-    print(f"  ESTRATEGAS IA - Scraper v4.6 {'(DEBUG)' if args.debug else ''}")
-    print("=" * 65)
+    print("=" * 70)
+    print("  ESTRATEGAS IA - Scraper v5.0 | Análisis de Tendencia 6 Meses")
+    print("=" * 70)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
-    print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
-    print("=" * 65)
+    print(f"  Máx productos: {args.max_products} | Análisis histórico: {args.max_history}")
+    print("=" * 70)
     
     scraper = DropKillerScraper(DROPKILLER_EMAIL, DROPKILLER_PASSWORD, debug=args.debug)
-    supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
+    supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
     
-    stats = {"scraped": 0, "analyzed": 0, "recommended": 0}
+    stats = {"scraped": 0, "analyzed": 0, "growing": 0, "recommended": 0}
     
     try:
         print("\n[FASE 1] Login")
@@ -532,7 +706,7 @@ async def main():
             print("\nERROR: Login fallido")
             return
         
-        print("\n[FASE 2] Extracción")
+        print("\n[FASE 2] Extracción de productos")
         products = await scraper.get_products(args.country, args.min_sales, args.max_products, args.max_pages)
         
         if not products:
@@ -541,80 +715,114 @@ async def main():
         
         stats["scraped"] = len(products)
         
-        print(f"\n[FASE 3] Análisis de {len(products)} productos\n")
+        # Analizar tendencias
+        products = await scraper.analyze_product_trends(products, args.max_history)
         
-        recommended = []
+        stats["analyzed"] = len([p for p in products if p.get('trend_pattern') != 'NO_ANALIZADO'])
+        stats["growing"] = len([p for p in products if p.get('is_growing')])
         
-        for i, product in enumerate(products, 1):
-            ext_id = product.get("externalId", f"prod_{i}")
-            name = product.get("name", "Sin nombre")[:40]
-            cost = product.get("providerPrice", 35000)
-            sales7d = product.get("sales7d", 0)
-            sales30d = product.get("sales30d", 0)
-            stock = product.get("stock", 0)
+        print(f"\n[FASE 4] Clasificación y Guardado")
+        
+        # Clasificar productos
+        opportunities = []
+        
+        for product in products:
+            margin = calculate_margin(product.get('providerPrice', 35000))
             
-            print(f"  [{i}/{len(products)}] {name}")
+            pattern = product.get('trend_pattern', 'NO_ANALIZADO')
+            trend_score = product.get('trend_score', 50)
+            sales7d = product.get('sales7d', 0)
+            roi = margin['roi']
             
-            margin = calculate_margin(cost)
-            score, reasons, verdict, _, _ = calculate_viability(product, margin)
+            # Criterios de oportunidad
+            is_opportunity = (
+                pattern in ['DESPEGANDO', 'CRECIMIENTO_SOSTENIDO'] and
+                trend_score >= 70 and
+                sales7d >= 30 and
+                roi >= 15
+            )
             
-            print(f"      V7d:{sales7d} V30d:{sales30d} | ${cost:,} | ROI:{margin['roi']}%")
+            # También considerar estables con muy buenas métricas
+            if pattern == 'ESTABLE' and trend_score >= 65 and sales7d >= 100 and roi >= 20:
+                is_opportunity = True
             
-            stats["analyzed"] += 1
-            
-            ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
-            if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and sales7d >= 5:
-                ai_result = analyze_with_claude(product, margin)
-            
-            is_recommended = score >= 50 and margin["roi"] >= 15 and sales7d >= 10 and ai_result.get("recommendation") != "NO_VENDER"
-            
-            if is_recommended:
+            if is_opportunity:
                 stats["recommended"] += 1
-                print(f"      ✅ RECOMENDADO (Score:{score})")
-                recommended.append({
-                    "name": name, "sales7d": sales7d, "sales30d": sales30d,
-                    "margin": margin["net_margin"], "score": score, "cost": cost
-                })
+                opportunities.append(product)
             
-            data = {
-                "external_id": ext_id,
-                "platform": "dropi",
-                "country_code": args.country,
-                "name": name,
-                "cost_price": cost,
-                "suggested_price": margin["optimal_price"],
-                "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
-                "sales_7d": sales7d,
-                "sales_30d": sales30d,
-                "current_stock": stock,
-                "real_margin": margin["net_margin"],
-                "roi": margin["roi"],
-                "breakeven_price": margin["breakeven_price"],
-                "viability_score": score,
-                "viability_verdict": verdict,
-                "score_reasons": reasons,
-                "unused_angles": ai_result.get("unused_angles", []),
-                "ai_recommendation": ai_result.get("recommendation", verdict),
-                "ai_analysis": json.dumps(ai_result),
-                "is_recommended": is_recommended,
-                "analyzed_at": datetime.now().isoformat()
-            }
-            
-            supabase.upsert("analyzed_products", data)
+            # Guardar en Supabase si está configurado
+            if supabase:
+                data = {
+                    "external_id": product.get('uuid', ''),
+                    "platform": "dropi",
+                    "country_code": args.country,
+                    "name": product.get('name', '')[:60],
+                    "cost_price": product.get('providerPrice', 0),
+                    "suggested_price": margin["optimal_price"],
+                    "optimal_price": margin["optimal_price"],
+                    "sales_7d": sales7d,
+                    "sales_30d": product.get('sales30d', 0),
+                    "current_stock": product.get('stock', 0),
+                    "real_margin": margin["net_margin"],
+                    "roi": roi,
+                    "breakeven_price": margin["breakeven_price"],
+                    "viability_score": trend_score,
+                    "viability_verdict": pattern,
+                    "trend_pattern": pattern,
+                    "trend_score": trend_score,
+                    "growth_rate_7d": product.get('growth_rate_7d', 0),
+                    "growth_rate_30d": product.get('growth_rate_30d', 0),
+                    "is_growing": product.get('is_growing', False),
+                    "avg_daily_sales": product.get('avg_daily', 0),
+                    "total_sold": product.get('total_sold', 0),
+                    "created_at_product": product.get('created_at'),
+                    "provider_name": product.get('provider_name', ''),
+                    "category": product.get('category', ''),
+                    "is_recommended": is_opportunity,
+                    "analyzed_at": datetime.now().isoformat()
+                }
+                supabase.upsert("analyzed_products", data)
         
-        print("\n" + "=" * 65)
+        # Resumen
+        print("\n" + "=" * 70)
         print("  RESUMEN")
-        print("=" * 65)
-        print(f"  Scrapeados: {stats['scraped']}")
-        print(f"  Analizados: {stats['analyzed']}")
-        print(f"  Recomendados: {stats['recommended']}")
+        print("=" * 70)
+        print(f"  Productos scrapeados: {stats['scraped']}")
+        print(f"  Analizados con histórico: {stats['analyzed']}")
+        print(f"  En crecimiento: {stats['growing']}")
+        print(f"  🎯 OPORTUNIDADES: {stats['recommended']}")
         
-        if recommended:
-            print(f"\n  🏆 TOP 10:")
-            for p in sorted(recommended, key=lambda x: x["sales7d"], reverse=True)[:10]:
-                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} V30d:{p['sales30d']} | ${p['cost']:,}")
+        # Mostrar oportunidades por categoría
+        print("\n" + "=" * 70)
+        print("  📊 CLASIFICACIÓN POR TENDENCIA")
+        print("=" * 70)
         
-        print("=" * 65)
+        for pattern, description in TREND_PATTERNS.items():
+            count = len([p for p in products if p.get('trend_pattern') == pattern])
+            if count > 0:
+                print(f"  {description}: {count}")
+        
+        # Top oportunidades
+        if opportunities:
+            print("\n" + "=" * 70)
+            print("  🏆 TOP OPORTUNIDADES (Despegando + Creciendo)")
+            print("=" * 70)
+            
+            # Ordenar por trend_score y ventas
+            top = sorted(opportunities, key=lambda x: (x.get('trend_score', 0), x.get('sales7d', 0)), reverse=True)[:15]
+            
+            for i, p in enumerate(top, 1):
+                name = p.get('name', 'N/A')[:35]
+                pattern = p.get('trend_pattern', 'N/A')
+                sales7d = p.get('sales7d', 0)
+                growth = p.get('growth_rate_7d', 0)
+                margin = calculate_margin(p.get('providerPrice', 35000))
+                
+                emoji = "🚀" if pattern == "DESPEGANDO" else "📈"
+                print(f"  {i:2}. {emoji} {name}")
+                print(f"      V7d:{sales7d} | Growth:{growth:+.0f}% | ROI:{margin['roi']}% | ${p.get('providerPrice', 0):,}")
+        
+        print("=" * 70)
         
     finally:
         await scraper.close()
