@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v5.1
-FIX: Extracción de UUID desde HTML de fila (no hay enlaces <a>)
+Scraper Automático de DropKiller - Estrategas IA v5.2
+FIX: history está al mismo nivel que data en la respuesta API
 """
 
 import os
@@ -227,7 +227,7 @@ class TrendAnalyzer:
             return "ESTABLE", 55
 
 
-# ============== DROPKILLER SCRAPER v5.1 ==============
+# ============== DROPKILLER SCRAPER v5.2 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -597,7 +597,9 @@ class DropKillerScraper:
                 continue
             
             data = history_data['data']
-            history = data.get('history', [])
+            # FIX v5.2: history está al mismo nivel que data, no dentro de data
+            # Estructura: {"data": {...}, "history": [...], "pagination": {...}}
+            history = history_data.get('history', [])
             created_at = data.get('createdAt')
             
             # Analizar tendencia
@@ -673,7 +675,7 @@ def calculate_margin(cost_price: int) -> Dict:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v5.1 con Análisis de Tendencia")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v5.2 con Análisis de Tendencia")
     parser.add_argument("--min-sales", type=int, default=30, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos a extraer")
     parser.add_argument("--max-history", type=int, default=50, help="Máx productos para análisis de histórico")
@@ -688,7 +690,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 70)
-    print("  ESTRATEGAS IA - Scraper v5.1 | Análisis de Tendencia 6 Meses")
+    print("  ESTRATEGAS IA - Scraper v5.2 | Análisis de Tendencia 6 Meses")
     print("=" * 70)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Análisis histórico: {args.max_history}")
