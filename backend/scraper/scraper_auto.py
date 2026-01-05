@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v3.5
-Más scroll + cambiar límite en página para obtener más productos
+Scraper Automático de DropKiller - Estrategas IA v4.0
+Con paginación para obtener muchos más productos
 """
 
 import os
@@ -130,169 +130,198 @@ class DropKillerScraper:
             print(f"  [✗] Error: {e}")
             return False
     
-    async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[Dict]:
-        """Extrae productos de DropKiller"""
+    async def extract_products_from_page(self) -> List[Dict]:
+        """Extrae productos de la página actual"""
+        return await self.page.evaluate('''() => {
+            const products = [];
+            const seen = new Set();
+            
+            const buttons = document.querySelectorAll('button, a, span');
+            const detailElements = Array.from(buttons).filter(el => 
+                el.innerText && el.innerText.trim() === 'Ver detalle'
+            );
+            
+            for (const btn of detailElements) {
+                let row = btn.parentElement;
+                for (let i = 0; i < 10 && row; i++) {
+                    if (row.tagName === 'TR' || 
+                        (row.innerText && row.innerText.includes('Stock:') && row.innerText.includes('COP'))) {
+                        break;
+                    }
+                    row = row.parentElement;
+                }
+                
+                if (!row) continue;
+                
+                const text = row.innerText || '';
+                if (text.length < 50) continue;
+                
+                const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
+                const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
+                
+                const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
+                let providerPrice = 0;
+                let profit = 0;
+                
+                const validPrices = priceMatches
+                    .map(p => parseInt(p.replace(/[\\.\\sCOP]/g, '')))
+                    .filter(p => p >= 1000 && p <= 300000);
+                
+                if (validPrices.length >= 1) providerPrice = validPrices[0];
+                if (validPrices.length >= 2) profit = validPrices[1];
+                
+                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
+                let name = '';
+                
+                for (const line of lines) {
+                    if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
+                    if (/^[\\d.,\\s]+$/.test(line)) continue;
+                    if (/^[\\d.,]+\\s*COP/.test(line)) continue;
+                    if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
+                    if (line.includes('Ver detalle') || line.includes('ID')) continue;
+                    if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
+                    if (line.length < 10 || line.length > 80) continue;
+                    
+                    const lower = line.toLowerCase();
+                    const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
+                                           'group', 'china', 'bodeguita', 'inversiones',
+                                           'fragance', 'glow', 'perfumeria'];
+                    if (providerWords.some(w => lower.includes(w))) continue;
+                    
+                    const words = line.split(/\\s+/);
+                    if (words.length === 1 && line.length < 15) continue;
+                    
+                    name = line;
+                    break;
+                }
+                
+                if (!name || providerPrice === 0) continue;
+                
+                const textAfterPrices = text.split('COP').slice(-1)[0] || '';
+                const nums = textAfterPrices.match(/\\b(\\d{1,4})\\b/g) || [];
+                const salesCandidates = nums.map(n => parseInt(n))
+                    .filter(n => n > 0 && n < 2000 && n !== stock);
+                
+                let sales7d = salesCandidates.length > 0 ? salesCandidates[0] : 0;
+                let sales30d = salesCandidates.length > 1 ? salesCandidates[1] : 0;
+                
+                const uniqueKey = name.substring(0, 25) + '_' + providerPrice;
+                if (seen.has(uniqueKey)) continue;
+                seen.add(uniqueKey);
+                
+                products.push({
+                    name: name.substring(0, 60),
+                    providerPrice,
+                    profit,
+                    stock,
+                    sales7d,
+                    sales30d,
+                    externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
+                });
+            }
+            
+            return products;
+        }''')
+    
+    async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100, max_pages: int = 5) -> List[Dict]:
+        """Extrae productos de DropKiller con paginación"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
-        # Usar limit=200 en la URL para obtener más productos
-        url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30&limit=200"
+        base_url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30"
+        
+        all_products = []
+        seen_ids = set()
         
         try:
-            await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            # Primera página
+            await self.page.goto(base_url, wait_until='domcontentloaded', timeout=60000)
             print("      Esperando tabla...")
             await asyncio.sleep(8)
             
-            # Intentar cambiar el selector de "Mostrar" a 100
-            print("      Configurando vista...")
-            try:
-                # Buscar selector de cantidad
-                select = await self.page.query_selector('select, [role="combobox"]')
-                if select:
-                    await select.select_option('100')
-                    await asyncio.sleep(3)
-            except:
-                pass
-            
-            print("      Scroll para cargar más productos...")
-            # Más scrolls para cargar todo
-            for i in range(20):
-                await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await asyncio.sleep(1)
-            
-            await self.page.evaluate('window.scrollTo(0, 0)')
-            await asyncio.sleep(2)
-            
-            await self.page.screenshot(path='debug_products.png', full_page=True)
-            
-            print("      Extrayendo datos de filas...")
-            
-            products = await self.page.evaluate('''() => {
-                const products = [];
-                const seen = new Set();
-                
-                // Buscar todos los botones "Ver detalle"
-                const buttons = document.querySelectorAll('button, a, span');
-                const detailElements = Array.from(buttons).filter(el => 
-                    el.innerText && el.innerText.trim() === 'Ver detalle'
-                );
-                
-                console.log('Found Ver detalle buttons:', detailElements.length);
-                
-                for (const btn of detailElements) {
-                    // Subir en el DOM hasta encontrar la fila
-                    let row = btn.parentElement;
-                    for (let i = 0; i < 10 && row; i++) {
-                        if (row.tagName === 'TR' || 
-                            (row.innerText && row.innerText.includes('Stock:') && row.innerText.includes('COP'))) {
-                            break;
-                        }
-                        row = row.parentElement;
-                    }
-                    
-                    if (!row) continue;
-                    
-                    const text = row.innerText || '';
-                    if (text.length < 50) continue;
-                    
-                    // Extraer Stock
-                    const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
-                    const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
-                    
-                    // Extraer precios (XX.XXX COP)
-                    const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
-                    let providerPrice = 0;
-                    let profit = 0;
-                    
-                    const validPrices = priceMatches
-                        .map(p => parseInt(p.replace(/[\\.\\sCOP]/g, '')))
-                        .filter(p => p >= 1000 && p <= 300000);
-                    
-                    if (validPrices.length >= 1) providerPrice = validPrices[0];
-                    if (validPrices.length >= 2) profit = validPrices[1];
-                    
-                    // Buscar nombre
-                    const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
-                    let name = '';
-                    
-                    for (const line of lines) {
-                        // Excluir fechas
-                        if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
-                        // Excluir números
-                        if (/^[\\d.,\\s]+$/.test(line)) continue;
-                        // Excluir precios
-                        if (/^[\\d.,]+\\s*COP/.test(line)) continue;
-                        // Excluir metadata
-                        if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
-                        if (line.includes('Ver detalle') || line.includes('ID')) continue;
-                        if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
-                        // Longitud válida
-                        if (line.length < 10 || line.length > 80) continue;
-                        
-                        // Excluir proveedores
-                        const lower = line.toLowerCase();
-                        const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
-                                               'group', 'china', 'bodeguita', 'inversiones',
-                                               'fragance', 'glow', 'perfumeria'];
-                        if (providerWords.some(w => lower.includes(w))) continue;
-                        
-                        // Excluir marcas sueltas (1 palabra < 15 chars)
-                        const words = line.split(/\\s+/);
-                        if (words.length === 1 && line.length < 15) continue;
-                        
-                        name = line;
-                        break;
-                    }
-                    
-                    if (!name || providerPrice === 0) continue;
-                    
-                    // Extraer ventas
-                    const textAfterPrices = text.split('COP').slice(-1)[0] || '';
-                    const nums = textAfterPrices.match(/\\b(\\d{1,4})\\b/g) || [];
-                    const salesCandidates = nums.map(n => parseInt(n))
-                        .filter(n => n > 0 && n < 2000 && n !== stock);
-                    
-                    let sales7d = salesCandidates.length > 0 ? salesCandidates[0] : 0;
-                    let sales30d = salesCandidates.length > 1 ? salesCandidates[1] : 0;
-                    
-                    // ID único
-                    const uniqueKey = name.substring(0, 25) + '_' + providerPrice;
-                    if (seen.has(uniqueKey)) continue;
-                    seen.add(uniqueKey);
-                    
-                    products.push({
-                        name: name.substring(0, 60),
-                        providerPrice,
-                        profit,
-                        stock,
-                        sales7d,
-                        sales30d,
-                        externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
-                    });
-                }
-                
-                return products;
+            # Obtener número total de páginas
+            total_pages = await self.page.evaluate('''() => {
+                const text = document.body.innerText;
+                const match = text.match(/Página\\s+\\d+\\s+de\\s+(\\d+)/i);
+                return match ? parseInt(match[1]) : 1;
             }''')
             
-            print(f"      Extraídos: {len(products)} productos")
+            pages_to_scrape = min(total_pages, max_pages)
+            print(f"      Total páginas disponibles: {total_pages} (scrapeando {pages_to_scrape})")
+            
+            for page_num in range(1, pages_to_scrape + 1):
+                print(f"      Página {page_num}/{pages_to_scrape}...")
+                
+                if page_num > 1:
+                    # Navegar a la siguiente página
+                    # Buscar botón de siguiente o hacer clic en el número de página
+                    try:
+                        # Intentar clic en botón "siguiente" (>)
+                        next_btn = await self.page.query_selector('button:has-text(">"), [aria-label="Next"], [aria-label="Siguiente"]')
+                        if next_btn:
+                            await next_btn.click()
+                            await asyncio.sleep(3)
+                        else:
+                            # Intentar clic directo en número de página
+                            page_btn = await self.page.query_selector(f'button:has-text("{page_num}"), a:has-text("{page_num}")')
+                            if page_btn:
+                                await page_btn.click()
+                                await asyncio.sleep(3)
+                    except Exception as e:
+                        print(f"        Error navegando: {e}")
+                        break
+                
+                # Scroll en la página actual
+                for _ in range(5):
+                    await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(0.5)
+                await self.page.evaluate('window.scrollTo(0, 0)')
+                await asyncio.sleep(1)
+                
+                # Extraer productos de esta página
+                page_products = await self.extract_products_from_page()
+                
+                # Agregar solo productos nuevos
+                new_count = 0
+                for p in page_products:
+                    pid = p.get('externalId', '')
+                    if pid not in seen_ids:
+                        seen_ids.add(pid)
+                        all_products.append(p)
+                        new_count += 1
+                
+                print(f"        Extraídos: {len(page_products)} ({new_count} nuevos)")
+                
+                # Si ya tenemos suficientes, parar
+                if len(all_products) >= max_products:
+                    print(f"      Alcanzado límite de {max_products} productos")
+                    break
+                
+                # Si no se encontraron productos nuevos, probablemente llegamos al final
+                if new_count == 0 and page_num > 1:
+                    print(f"      Sin productos nuevos, terminando...")
+                    break
+            
+            # Guardar screenshot final
+            await self.page.screenshot(path='debug_products.png')
             
             # Filtrar por ventas mínimas
-            products = [p for p in products if p.get('sales7d', 0) >= min_sales][:max_products]
+            all_products = [p for p in all_products if p.get('sales7d', 0) >= min_sales][:max_products]
             
-            print(f"  [✓] {len(products)} productos con ventas >= {min_sales}")
+            print(f"  [✓] Total: {len(all_products)} productos con ventas >= {min_sales}")
             
-            if products:
+            if all_products:
                 print(f"      Ejemplos:")
-                for p in products[:5]:
-                    print(f"        - {p['name'][:40]} | ${p['providerPrice']:,} | V7d:{p['sales7d']} V30d:{p['sales30d']}")
+                for p in all_products[:5]:
+                    print(f"        - {p['name'][:40]} | ${p['providerPrice']:,} | V7d:{p['sales7d']}")
             
-            return products
+            return all_products
             
         except Exception as e:
             print(f"  [✗] Error: {e}")
             import traceback
             traceback.print_exc()
-            return []
+            return all_products  # Retornar lo que tengamos
     
     async def close(self):
         if self.browser:
@@ -415,9 +444,10 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.5")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.0 (con paginación)")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
-    parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
+    parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
+    parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas a scrapear")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
     parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     parser.add_argument("--visible", action="store_true", help="Mostrar navegador")
@@ -432,9 +462,10 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v3.5")
+    print("  ESTRATEGAS IA - Scraper v4.0 (con paginación)")
     print("=" * 65)
-    print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
+    print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
+    print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
     print("=" * 65)
     
     scraper = DropKillerScraper(DROPKILLER_EMAIL, DROPKILLER_PASSWORD)
@@ -450,8 +481,8 @@ async def main():
             print("\nERROR: Login fallido")
             return
         
-        print("\n[FASE 2] Extracción")
-        products = await scraper.get_products(args.country, args.min_sales, args.max_products)
+        print("\n[FASE 2] Extracción con paginación")
+        products = await scraper.get_products(args.country, args.min_sales, args.max_products, args.max_pages)
         
         if not products:
             print("\nNo se encontraron productos.")
