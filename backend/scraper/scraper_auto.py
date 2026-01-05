@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v2.2
-Extracción basada en la estructura real de la tabla
+Scraper Automático de DropKiller - Estrategas IA v2.3
+Filtrado mejorado: excluye headers y proveedores
 """
 
 import os
@@ -30,6 +30,16 @@ DROPKILLER_COUNTRIES = {
     "MX": "98993bd0-955a-4fa3-9612-c9d4389c44d0", 
     "EC": "82811e8b-d17d-4ab9-847a-fa925785d566",
 }
+
+# Headers y palabras que NO son productos
+EXCLUDED_NAMES = [
+    'ventas', 'facturación', 'fecha', 'producto', 'proveedor', 'ganancias',
+    'stock', 'precio', 'días', 'creación', 'página', 'mostrar', 'buscar',
+    'filtros', 'avanzados', 'colombia', 'dropi', 'dashboard', 'inicio',
+    'productos seguidos', 'adskiller', 'tiktok shop', 'killer store',
+    'extensión', 'premium', 'inversiones', 'importaciones', 'tienda',
+    'shop', 'store', 'mayorista', 'bodeguita', 'group', 'quality'
+]
 
 
 # ============== SUPABASE ==============
@@ -68,7 +78,7 @@ class DropKillerScraper:
         )
         self.context = await self.browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         )
         self.page = await self.context.new_page()
         self.page.set_default_timeout(60000)
@@ -81,7 +91,6 @@ class DropKillerScraper:
             await self.page.goto('https://app.dropkiller.com/sign-in', wait_until='domcontentloaded', timeout=60000)
             await asyncio.sleep(5)
             
-            print("      Buscando campo de email...")
             email_input = None
             for selector in ['input#identifier-field', 'input[name="identifier"]', 'input[type="email"]']:
                 try:
@@ -92,14 +101,12 @@ class DropKillerScraper:
                     continue
             
             if not email_input:
-                print("  [✗] No se encontró campo de email")
                 return False
             
-            print("      Ingresando email...")
+            print("      Ingresando credenciales...")
             await email_input.fill(self.email)
             await asyncio.sleep(1)
             
-            print("      Buscando campo de contraseña...")
             password_input = None
             for selector in ['input#password-field', 'input[type="password"]']:
                 try:
@@ -110,21 +117,18 @@ class DropKillerScraper:
                     continue
             
             if not password_input:
-                print("  [✗] No se encontró campo de contraseña")
                 return False
             
-            print("      Ingresando contraseña...")
             await password_input.fill(self.password)
             await asyncio.sleep(1)
             
-            print("      Enviando formulario...")
             try:
                 submit_btn = await self.page.wait_for_selector('button:has-text("Iniciar")', timeout=3000)
                 await submit_btn.click()
             except:
                 await password_input.press('Enter')
             
-            print("      Esperando redirección al dashboard...")
+            print("      Esperando dashboard...")
             try:
                 await self.page.wait_for_url('**/dashboard**', timeout=30000)
                 print("  [✓] Login exitoso")
@@ -136,11 +140,11 @@ class DropKillerScraper:
                 return False
             
         except Exception as e:
-            print(f"  [✗] Error en login: {e}")
+            print(f"  [✗] Error: {e}")
             return False
     
     async def get_products_from_table(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[Dict]:
-        """Extrae productos de la tabla de DropKiller"""
+        """Extrae productos de la tabla de DropKiller con filtrado mejorado"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
@@ -148,11 +152,10 @@ class DropKillerScraper:
         
         try:
             await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            print("      Esperando que cargue la tabla...")
+            print("      Esperando tabla...")
             await asyncio.sleep(8)
             
-            # Scroll para cargar más productos
-            print("      Cargando más productos (scroll)...")
+            print("      Scroll para cargar más...")
             for i in range(10):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await asyncio.sleep(1)
@@ -160,253 +163,125 @@ class DropKillerScraper:
             await self.page.evaluate('window.scrollTo(0, 0)')
             await asyncio.sleep(2)
             
-            print("      Extrayendo datos de la tabla...")
+            print("      Extrayendo datos...")
             
-            # La tabla tiene estructura:
-            # Columnas: Producto | Precio Proveedor | Ganancias | Ventas (7 días) | Ventas (30 días) | ... | Ver detalle
-            # Cada fila tiene: imagen, nombre, proveedor, stock, y luego los valores numéricos
+            # Pasar lista de exclusión al JavaScript
+            excluded = json.dumps(EXCLUDED_NAMES)
             
-            products = await self.page.evaluate('''() => {
+            products = await self.page.evaluate(f'''() => {{
                 const products = [];
                 const seen = new Set();
+                const excluded = {excluded};
                 
-                // Buscar todas las filas que contengan "Ver detalle" (indica fila de producto)
-                const rows = document.querySelectorAll('tr, [role="row"]');
+                // Función para verificar si es un nombre válido de producto
+                function isValidProductName(name) {{
+                    if (!name || name.length < 10 || name.length > 80) return false;
+                    
+                    const lower = name.toLowerCase();
+                    
+                    // Excluir headers y palabras clave
+                    for (const ex of excluded) {{
+                        if (lower.includes(ex)) return false;
+                    }}
+                    
+                    // Debe tener al menos 2 palabras
+                    if (name.split(/\\s+/).length < 2) return false;
+                    
+                    // No debe ser solo números o caracteres especiales
+                    if (/^[\\d\\s.,\\-$%]+$/.test(name)) return false;
+                    
+                    // Debe parecer un nombre de producto (mayúsculas con descripción)
+                    if (!/[A-ZÁÉÍÓÚÑ]/.test(name)) return false;
+                    
+                    return true;
+                }}
                 
-                for (const row of rows) {
+                // Buscar filas de productos
+                const rows = document.querySelectorAll('tr');
+                
+                for (const row of rows) {{
                     const text = row.innerText || '';
+                    if (!text.includes('Ver detalle')) continue;
+                    if (text.length < 50) continue;
                     
-                    // Debe tener "Ver detalle" o "ID" para ser una fila de producto
-                    if (!text.includes('Ver detalle') && !text.includes('ID')) continue;
+                    const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                     
-                    // Buscar Stock: seguido de número
+                    // Buscar nombre del producto (línea larga en mayúsculas)
+                    let name = '';
+                    for (const line of lines) {{
+                        if (isValidProductName(line)) {{
+                            name = line;
+                            break;
+                        }}
+                    }}
+                    
+                    if (!name) continue;
+                    
+                    // Buscar Stock
                     const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
                     const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
                     
-                    // Buscar precios en formato XX.XXX COP
-                    const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*(?:,\\d+)?)\\s*COP/g) || [];
-                    
-                    // El primer precio es "Precio Proveedor", el segundo es "Ganancias"
+                    // Buscar precios (formato XX.XXX COP)
+                    const priceMatches = text.match(/(\\d{{1,3}}(?:\\.\\d{{3}})*)\\s*COP/g) || [];
                     let providerPrice = 0;
                     let profit = 0;
                     
-                    if (priceMatches.length >= 1) {
-                        providerPrice = parseInt(priceMatches[0].replace(/[.\\sCOP]/g, '').replace(',', '.'));
-                    }
-                    if (priceMatches.length >= 2) {
-                        profit = parseInt(priceMatches[1].replace(/[.\\sCOP]/g, '').replace(',', '.'));
-                    }
+                    if (priceMatches.length >= 1) {{
+                        providerPrice = parseInt(priceMatches[0].replace(/[\\.\\sCOP]/g, ''));
+                    }}
+                    if (priceMatches.length >= 2) {{
+                        profit = parseInt(priceMatches[1].replace(/[\\.\\sCOP]/g, ''));
+                    }}
                     
-                    // Buscar ventas - números que NO son precios (sin COP)
-                    // Los números de ventas están después de los precios
-                    const lines = text.split('\\n').map(l => l.trim());
-                    let sales7d = 0;
-                    let sales30d = 0;
+                    // Buscar ventas (números entre precios COP y "Ver detalle")
+                    // Los números de ventas suelen estar en la segunda mitad del texto
+                    const afterPrices = text.split('COP').slice(-1)[0] || '';
+                    const salesNumbers = afterPrices.match(/\\b(\\d{{1,4}})\\b/g) || [];
+                    const salesValues = salesNumbers.map(n => parseInt(n)).filter(n => n > 0 && n < 5000);
                     
-                    // Buscar números puros (ventas) después de encontrar COP
-                    let foundCOP = false;
-                    let salesNumbers = [];
+                    let sales7d = 0, sales30d = 0;
+                    if (salesValues.length >= 2) {{
+                        // Últimos dos números antes de "Ver detalle" suelen ser ventas
+                        sales7d = salesValues[salesValues.length - 2] || salesValues[0];
+                        sales30d = salesValues[salesValues.length - 1];
+                    }} else if (salesValues.length === 1) {{
+                        sales7d = salesValues[0];
+                    }}
                     
-                    for (const line of lines) {
-                        if (line.includes('COP')) {
-                            foundCOP = true;
-                            continue;
-                        }
-                        if (foundCOP) {
-                            const numMatch = line.match(/^(\\d+)$/);
-                            if (numMatch) {
-                                salesNumbers.push(parseInt(numMatch[1]));
-                            }
-                        }
-                    }
+                    // ID único
+                    const uniqueId = name.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_') + '_' + providerPrice;
                     
-                    // Los primeros dos números después de COP son ventas 7d y 30d
-                    if (salesNumbers.length >= 1) sales7d = salesNumbers[0];
-                    if (salesNumbers.length >= 2) sales30d = salesNumbers[1];
-                    
-                    // Buscar nombre del producto (texto largo antes de "Proveedor:")
-                    let name = '';
-                    for (const line of lines) {
-                        if (line.length > 10 && line.length < 100 && 
-                            !line.includes('COP') && !line.includes('Stock') && 
-                            !line.includes('Proveedor') && !line.includes('Ver detalle') &&
-                            !line.includes('ID') && !/^\\d+$/.test(line)) {
-                            name = line;
-                            break;
-                        }
-                    }
-                    
-                    // Generar un ID único basado en nombre y precio
-                    const uniqueId = name.substring(0, 20) + '_' + providerPrice;
-                    
-                    if (name && (sales7d > 0 || providerPrice > 0) && !seen.has(uniqueId)) {
+                    if (!seen.has(uniqueId) && providerPrice > 0 && providerPrice < 500000) {{
                         seen.add(uniqueId);
-                        products.push({
+                        products.push({{
                             name: name.substring(0, 60),
                             providerPrice,
                             profit,
                             stock,
                             sales7d,
                             sales30d,
-                            externalId: uniqueId.replace(/[^a-zA-Z0-9]/g, '_')
-                        });
-                    }
-                }
+                            externalId: uniqueId
+                        }});
+                    }}
+                }}
                 
                 return products;
-            }''')
+            }}''')
             
-            print(f"      Método 1 (filas con Ver detalle): {len(products)} productos")
-            
-            # Método alternativo: buscar por estructura de celdas
-            if len(products) < 5:
-                print("      Intentando método alternativo (celdas)...")
-                products2 = await self.page.evaluate('''() => {
-                    const products = [];
-                    const seen = new Set();
-                    
-                    // Buscar elementos que parecen cards de productos
-                    const elements = document.querySelectorAll('div[class*="product"], div[class*="row"], div[class*="card"]');
-                    
-                    for (const el of elements) {
-                        const text = el.innerText || '';
-                        if (text.length < 30 || text.length > 1000) continue;
-                        if (!text.includes('COP')) continue;
-                        
-                        // Buscar Stock
-                        const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
-                        const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
-                        
-                        // Buscar precios
-                        const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
-                        let providerPrice = 0;
-                        if (priceMatches.length >= 1) {
-                            providerPrice = parseInt(priceMatches[0].replace(/[.\\sCOP]/g, ''));
-                        }
-                        
-                        // Buscar números de ventas (números aislados entre 1-9999)
-                        const numbers = text.match(/\\b(\\d{1,4})\\b/g) || [];
-                        const salesCandidates = numbers.map(n => parseInt(n)).filter(n => n > 0 && n < 5000);
-                        
-                        let sales7d = 0, sales30d = 0;
-                        // Filtrar: stock ya lo tenemos, buscar otros números
-                        const filteredSales = salesCandidates.filter(n => n !== stock);
-                        if (filteredSales.length >= 1) sales7d = filteredSales[filteredSales.length - 2] || filteredSales[0];
-                        if (filteredSales.length >= 2) sales30d = filteredSales[filteredSales.length - 1];
-                        
-                        // Nombre
-                        const lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 5);
-                        let name = '';
-                        for (const line of lines) {
-                            if (line.length > 10 && line.length < 80 && 
-                                !line.includes('COP') && !line.includes('Stock') &&
-                                !/^\\d+$/.test(line)) {
-                                name = line;
-                                break;
-                            }
-                        }
-                        
-                        const uniqueId = name.substring(0, 20) + '_' + providerPrice;
-                        
-                        if (name && providerPrice > 0 && !seen.has(uniqueId)) {
-                            seen.add(uniqueId);
-                            products.push({
-                                name: name.substring(0, 60),
-                                providerPrice,
-                                profit: 0,
-                                stock,
-                                sales7d,
-                                sales30d,
-                                externalId: uniqueId.replace(/[^a-zA-Z0-9]/g, '_')
-                            });
-                        }
-                    }
-                    
-                    return products;
-                }''')
-                
-                print(f"      Método 2 (cards/divs): {len(products2)} productos")
-                if len(products2) > len(products):
-                    products = products2
-            
-            # Método 3: Extraer directamente de la estructura visible
-            if len(products) < 5:
-                print("      Intentando método 3 (texto completo)...")
-                products3 = await self.page.evaluate('''() => {
-                    const products = [];
-                    const seen = new Set();
-                    const bodyText = document.body.innerText;
-                    
-                    // Patrón: NOMBRE_PRODUCTO seguido de datos
-                    // Buscar líneas que tengan formato de producto
-                    const lines = bodyText.split('\\n').map(l => l.trim()).filter(l => l);
-                    
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        
-                        // Si la línea parece un nombre de producto (mayúsculas, sin números solos)
-                        if (line.length > 15 && line.length < 80 && 
-                            /^[A-ZÁÉÍÓÚÑ\\s]+/.test(line) &&
-                            !line.includes('COP') && !line.includes('Stock')) {
-                            
-                            // Buscar datos en las siguientes líneas
-                            const nextLines = lines.slice(i, i + 15).join(' ');
-                            
-                            const stockMatch = nextLines.match(/Stock:\\s*(\\d+)/i);
-                            const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
-                            
-                            const priceMatches = nextLines.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
-                            let providerPrice = 0;
-                            if (priceMatches.length >= 1) {
-                                providerPrice = parseInt(priceMatches[0].replace(/[.\\sCOP]/g, ''));
-                            }
-                            
-                            // Ventas: números después de los precios
-                            const numbers = nextLines.match(/\\b(\\d{1,4})\\b/g) || [];
-                            const numValues = numbers.map(n => parseInt(n)).filter(n => n > 0 && n < 5000 && n !== stock);
-                            
-                            let sales7d = numValues.length > 0 ? numValues[0] : 0;
-                            let sales30d = numValues.length > 1 ? numValues[1] : 0;
-                            
-                            const uniqueId = line.substring(0, 20) + '_' + providerPrice;
-                            
-                            if (providerPrice > 0 && !seen.has(uniqueId)) {
-                                seen.add(uniqueId);
-                                products.push({
-                                    name: line.substring(0, 60),
-                                    providerPrice,
-                                    profit: 0,
-                                    stock,
-                                    sales7d,
-                                    sales30d,
-                                    externalId: uniqueId.replace(/[^a-zA-Z0-9]/g, '_')
-                                });
-                            }
-                        }
-                    }
-                    
-                    return products;
-                }''')
-                
-                print(f"      Método 3 (texto): {len(products3)} productos")
-                if len(products3) > len(products):
-                    products = products3
-            
-            # Guardar debug
-            html = await self.page.content()
-            with open('debug_page.html', 'w', encoding='utf-8') as f:
-                f.write(html)
-            await self.page.screenshot(path='debug_products.png', full_page=True)
+            print(f"      Método tabla: {len(products)} productos")
             
             # Filtrar por ventas mínimas
             products = [p for p in products if p.get('sales7d', 0) >= min_sales][:max_products]
             
-            print(f"  [✓] Extraídos {len(products)} productos con ventas >= {min_sales}")
+            # Guardar debug
+            await self.page.screenshot(path='debug_products.png', full_page=True)
+            
+            print(f"  [✓] {len(products)} productos con ventas >= {min_sales}")
             
             if products:
                 print(f"      Ejemplos:")
                 for p in products[:3]:
-                    print(f"        - {p['name'][:30]} | ${p['providerPrice']:,} | Ventas: {p['sales7d']}/7d")
+                    print(f"        - {p['name'][:35]} | ${p['providerPrice']:,} | V7d:{p['sales7d']} | V30d:{p['sales30d']}")
             
             return products
             
@@ -539,7 +414,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Auto Scraper v2.2")
+    parser = argparse.ArgumentParser(description="DropKiller Auto Scraper v2.3")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
@@ -556,7 +431,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper Automático v2.2")
+    print("  ESTRATEGAS IA - Scraper Automático v2.3")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
@@ -574,11 +449,11 @@ async def main():
             print("\nERROR: No se pudo hacer login")
             return
         
-        print("\n[FASE 2] Extrayendo productos de la tabla")
+        print("\n[FASE 2] Extrayendo productos")
         products = await scraper.get_products_from_table(args.country, args.min_sales, args.max_products)
         
         if not products:
-            print("\nNo se encontraron productos con esos filtros.")
+            print("\nNo se encontraron productos.")
             return
         
         stats["scraped"] = len(products)
@@ -591,7 +466,8 @@ async def main():
             ext_id = product.get("externalId", f"prod_{i}")
             name = (product.get("name") or "Sin nombre")[:40]
             cost = product.get("providerPrice", 35000)
-            sales = product.get("sales7d", 0)
+            sales7d = product.get("sales7d", 0)
+            sales30d = product.get("sales30d", 0)
             stock = product.get("stock", 0)
             
             print(f"  [{i}/{len(products)}] {name}")
@@ -599,20 +475,20 @@ async def main():
             margin = calculate_margin(cost)
             score, reasons, verdict, recent_sales, est_stock = calculate_viability(product, margin)
             
-            print(f"      Ventas: {sales}/7d | Costo: ${cost:,} | ROI: {margin['roi']}% | Score: {score}")
+            print(f"      V7d: {sales7d} | V30d: {sales30d} | Costo: ${cost:,} | ROI: {margin['roi']}%")
             
             stats["analyzed"] += 1
             
             ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
-            if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and sales >= 5:
+            if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and sales7d >= 5:
                 ai_result = analyze_with_claude(product, margin)
             
-            is_recommended = score >= 50 and margin["roi"] >= 15 and sales >= 10 and ai_result.get("recommendation") != "NO_VENDER"
+            is_recommended = score >= 50 and margin["roi"] >= 15 and sales7d >= 10 and ai_result.get("recommendation") != "NO_VENDER"
             
             if is_recommended:
                 stats["recommended"] += 1
-                print(f"      ✅ RECOMENDADO")
-                recommended.append({"name": name, "sales": sales, "margin": margin["net_margin"], "score": score})
+                print(f"      ✅ RECOMENDADO (Score: {score})")
+                recommended.append({"name": name, "sales7d": sales7d, "sales30d": sales30d, "margin": margin["net_margin"], "score": score, "cost": cost})
             
             data = {
                 "external_id": ext_id,
@@ -622,8 +498,8 @@ async def main():
                 "cost_price": cost,
                 "suggested_price": margin["optimal_price"],
                 "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
-                "sales_7d": sales,
-                "sales_30d": product.get("sales30d", sales * 4),
+                "sales_7d": sales7d,
+                "sales_30d": sales30d,
                 "current_stock": stock,
                 "real_margin": margin["net_margin"],
                 "roi": margin["roi"],
@@ -648,9 +524,9 @@ async def main():
         print(f"  Productos recomendados: {stats['recommended']}")
         
         if recommended:
-            print(f"\n  🏆 TOP RECOMENDADOS:")
-            for p in sorted(recommended, key=lambda x: x["score"], reverse=True)[:10]:
-                print(f"     • {p['name'][:35]} | Ventas: {p['sales']}/7d | Margen: ${p['margin']:,}")
+            print(f"\n  🏆 TOP 10 RECOMENDADOS:")
+            for p in sorted(recommended, key=lambda x: x["sales7d"], reverse=True)[:10]:
+                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} V30d:{p['sales30d']} | Costo:${p['cost']:,} | Margen:${p['margin']:,}")
         
         print("=" * 65)
         
