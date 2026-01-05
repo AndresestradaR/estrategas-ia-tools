@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA
-Extrae productos ganadores y los analiza automáticamente
+Scraper Automático de DropKiller - Estrategas IA v1.1
+Login corregido para Clerk Auth
 """
 
 import os
@@ -12,7 +12,7 @@ import argparse
 import asyncio
 import requests
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from dotenv import load_dotenv
 
@@ -60,13 +60,13 @@ class DropKillerScraper:
         self.browser = None
         self.page = None
     
-    async def init_browser(self):
+    async def init_browser(self, headless: bool = True):
         """Inicializa el navegador"""
         from playwright.async_api import async_playwright
         
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
-            headless=True,
+            headless=headless,
             args=['--no-sandbox', '--disable-setuid-sandbox']
         )
         self.context = await self.browser.new_context(
@@ -76,32 +76,110 @@ class DropKillerScraper:
         self.page = await self.context.new_page()
     
     async def login(self) -> bool:
-        """Login en DropKiller"""
+        """Login en DropKiller usando Clerk"""
         print("  [1] Iniciando login en DropKiller...")
         
         try:
             await self.page.goto('https://app.dropkiller.com/sign-in', wait_until='networkidle')
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
-            # Llenar email
-            email_input = await self.page.wait_for_selector('input[name="identifier"], input[type="email"]', timeout=10000)
+            # Clerk Auth - Buscar campo de email por diferentes selectores
+            email_selectors = [
+                'input[name="identifier"]',
+                'input[id="identifier-field"]',
+                'input[type="email"]',
+                'input[placeholder*="correo"]',
+                'input[placeholder*="email"]',
+                '.cl-formFieldInput[name="identifier"]',
+            ]
+            
+            email_input = None
+            for selector in email_selectors:
+                try:
+                    email_input = await self.page.wait_for_selector(selector, timeout=3000)
+                    if email_input:
+                        print(f"      Email field: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not email_input:
+                print("  [✗] No se encontró campo de email")
+                # Guardar screenshot para debug
+                await self.page.screenshot(path="debug_login.png")
+                print("      Screenshot guardado: debug_login.png")
+                return False
+            
             await email_input.fill(self.email)
+            await asyncio.sleep(1)
             
-            # Llenar contraseña
-            password_input = await self.page.wait_for_selector('input[type="password"]', timeout=5000)
+            # Buscar campo de contraseña
+            password_selectors = [
+                'input[name="password"]',
+                'input[id="password-field"]',
+                'input[type="password"]',
+                '.cl-formFieldInput[type="password"]',
+            ]
+            
+            password_input = None
+            for selector in password_selectors:
+                try:
+                    password_input = await self.page.wait_for_selector(selector, timeout=3000)
+                    if password_input:
+                        print(f"      Password field: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not password_input:
+                print("  [✗] No se encontró campo de contraseña")
+                await self.page.screenshot(path="debug_login.png")
+                return False
+            
             await password_input.fill(self.password)
+            await asyncio.sleep(1)
             
-            # Click en iniciar sesión
-            submit_btn = await self.page.wait_for_selector('button[type="submit"]', timeout=5000)
-            await submit_btn.click()
+            # Buscar botón de submit
+            submit_selectors = [
+                'button:has-text("Iniciar sesión")',
+                'button:has-text("Sign in")',
+                'button:has-text("Continue")',
+                'button:has-text("Continuar")',
+                'button.cl-formButtonPrimary',
+                'form button[type="submit"]:visible',
+                'button[data-localization-key="formButtonPrimary"]',
+            ]
+            
+            submit_btn = None
+            for selector in submit_selectors:
+                try:
+                    submit_btn = await self.page.wait_for_selector(selector, timeout=2000)
+                    if submit_btn and await submit_btn.is_visible():
+                        print(f"      Submit button: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not submit_btn:
+                # Intentar con Enter
+                print("      Intentando con Enter...")
+                await password_input.press('Enter')
+            else:
+                await submit_btn.click()
             
             # Esperar redirección al dashboard
+            print("      Esperando redirección...")
             await self.page.wait_for_url('**/dashboard**', timeout=30000)
             print("  [✓] Login exitoso")
             return True
             
         except Exception as e:
             print(f"  [✗] Error en login: {e}")
+            try:
+                await self.page.screenshot(path="debug_login.png")
+                print("      Screenshot guardado: debug_login.png")
+            except:
+                pass
             return False
     
     async def get_product_ids(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[str]:
@@ -114,17 +192,18 @@ class DropKillerScraper:
         
         try:
             await self.page.goto(url, wait_until='networkidle')
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             
             # Scroll para cargar más productos
-            for _ in range(3):
+            print("      Cargando productos...")
+            for i in range(5):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await asyncio.sleep(1)
             
             # Extraer IDs del HTML
             html = await self.page.content()
             
-            # Buscar números de 6-7 dígitos (IDs de productos)
+            # Buscar números de 6-7 dígitos (IDs de productos Dropi)
             matches = re.findall(r'\b(\d{6,7})\b', html)
             ids = list(set(matches))
             
@@ -142,7 +221,7 @@ class DropKillerScraper:
         """Cierra el navegador"""
         if self.browser:
             await self.browser.close()
-        if self.playwright:
+        if hasattr(self, 'playwright') and self.playwright:
             await self.playwright.stop()
 
 
@@ -326,6 +405,7 @@ async def main():
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos a analizar")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
     parser.add_argument("--no-ai", action="store_true", help="Sin análisis Claude")
+    parser.add_argument("--visible", action="store_true", help="Mostrar navegador")
     args = parser.parse_args()
     
     # Validar config
@@ -338,7 +418,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper Automático v1.0")
+    print("  ESTRATEGAS IA - Scraper Automático v1.1")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
@@ -353,10 +433,12 @@ async def main():
     try:
         # 1. Iniciar navegador y login
         print("\n[FASE 1] Login en DropKiller")
-        await scraper.init_browser()
+        await scraper.init_browser(headless=not args.visible)
         
         if not await scraper.login():
             print("ERROR: No se pudo hacer login")
+            print("\nPrueba con --visible para ver qué está pasando:")
+            print("  python scraper_auto.py --visible --max-products 5")
             return
         
         # 2. Extraer IDs de productos
