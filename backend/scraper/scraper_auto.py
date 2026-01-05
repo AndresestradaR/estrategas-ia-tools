@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v1.2
-Timeouts ajustados
+Scraper Automático de DropKiller - Estrategas IA v1.3
+Con debug de IDs
 """
 
 import os
@@ -27,7 +27,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 DROPKILLER_COUNTRIES = {
     "CO": "65c75a5f-0c4a-45fb-8c90-5b538805a15a",
-    "MX": "98993bd0-955a-4fa3-9612-c9d4389c44d0",
+    "MX": "98993bd0-955a-4fa3-9612-c9d4389c44d0", 
     "EC": "82811e8b-d17d-4ab9-847a-fa925785d566",
 }
 
@@ -52,8 +52,6 @@ class SupabaseClient:
 
 # ============== DROPKILLER SCRAPER ==============
 class DropKillerScraper:
-    """Scraper con Playwright para DropKiller"""
-    
     def __init__(self, email: str, password: str):
         self.email = email
         self.password = password
@@ -61,7 +59,6 @@ class DropKillerScraper:
         self.page = None
     
     async def init_browser(self, headless: bool = True):
-        """Inicializa el navegador"""
         from playwright.async_api import async_playwright
         
         self.playwright = await async_playwright().start()
@@ -74,62 +71,44 @@ class DropKillerScraper:
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
         self.page = await self.context.new_page()
-        self.page.set_default_timeout(60000)  # 60 segundos default
+        self.page.set_default_timeout(60000)
     
     async def login(self) -> bool:
-        """Login en DropKiller usando Clerk"""
         print("  [1] Iniciando login en DropKiller...")
         
         try:
-            # Navegar - usar domcontentloaded en lugar de networkidle
             print("      Cargando página de login...")
             await self.page.goto('https://app.dropkiller.com/sign-in', wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(5)  # Esperar que cargue Clerk
+            await asyncio.sleep(5)
             
             print("      Buscando campo de email...")
-            
-            # Clerk Auth - Buscar campo de email
             email_input = None
-            try:
-                email_input = await self.page.wait_for_selector('input#identifier-field', timeout=10000)
-            except:
-                pass
-            
-            if not email_input:
+            for selector in ['input#identifier-field', 'input[name="identifier"]', 'input[type="email"]']:
                 try:
-                    email_input = await self.page.wait_for_selector('input[name="identifier"]', timeout=5000)
+                    email_input = await self.page.wait_for_selector(selector, timeout=3000)
+                    if email_input:
+                        break
                 except:
-                    pass
-            
-            if not email_input:
-                try:
-                    email_input = await self.page.wait_for_selector('input[type="email"]', timeout=5000)
-                except:
-                    pass
+                    continue
             
             if not email_input:
                 print("  [✗] No se encontró campo de email")
                 await self.page.screenshot(path="debug_login.png")
-                print("      Screenshot guardado: debug_login.png")
                 return False
             
             print("      Ingresando email...")
             await email_input.fill(self.email)
             await asyncio.sleep(1)
             
-            # Buscar campo de contraseña
             print("      Buscando campo de contraseña...")
             password_input = None
-            try:
-                password_input = await self.page.wait_for_selector('input#password-field', timeout=5000)
-            except:
-                pass
-            
-            if not password_input:
+            for selector in ['input#password-field', 'input[type="password"]']:
                 try:
-                    password_input = await self.page.wait_for_selector('input[type="password"]', timeout=5000)
+                    password_input = await self.page.wait_for_selector(selector, timeout=3000)
+                    if password_input:
+                        break
                 except:
-                    pass
+                    continue
             
             if not password_input:
                 print("  [✗] No se encontró campo de contraseña")
@@ -140,26 +119,19 @@ class DropKillerScraper:
             await password_input.fill(self.password)
             await asyncio.sleep(1)
             
-            # Click en submit o presionar Enter
             print("      Enviando formulario...")
             try:
                 submit_btn = await self.page.wait_for_selector('button:has-text("Iniciar")', timeout=3000)
                 await submit_btn.click()
             except:
-                try:
-                    submit_btn = await self.page.wait_for_selector('button:has-text("Continue")', timeout=3000)
-                    await submit_btn.click()
-                except:
-                    await password_input.press('Enter')
+                await password_input.press('Enter')
             
-            # Esperar redirección al dashboard
             print("      Esperando redirección al dashboard...")
             try:
                 await self.page.wait_for_url('**/dashboard**', timeout=30000)
                 print("  [✓] Login exitoso")
                 return True
             except:
-                # Verificar si ya estamos en el dashboard
                 if '/dashboard' in self.page.url:
                     print("  [✓] Login exitoso")
                     return True
@@ -171,40 +143,35 @@ class DropKillerScraper:
             print(f"  [✗] Error en login: {e}")
             try:
                 await self.page.screenshot(path="debug_login.png")
-                print("      Screenshot guardado: debug_login.png")
             except:
                 pass
             return False
     
     async def get_product_ids(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[str]:
-        """Extrae IDs de productos del dashboard"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
-        
         url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30&limit=100"
         
         try:
             await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
             await asyncio.sleep(5)
             
-            # Scroll para cargar más productos
             print("      Cargando productos...")
             for i in range(5):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await asyncio.sleep(1)
             
-            # Extraer IDs del HTML
             html = await self.page.content()
             
-            # Buscar números de 6-7 dígitos (IDs de productos Dropi)
+            # Buscar números de 6-7 dígitos
             matches = re.findall(r'\b(\d{6,7})\b', html)
             ids = list(set(matches))
-            
-            # Filtrar IDs válidos (> 100000)
             ids = [id for id in ids if int(id) > 100000][:max_products]
             
             print(f"  [✓] Encontrados {len(ids)} IDs de productos")
+            print(f"      Primeros 10 IDs: {ids[:10]}")
+            
             return ids
             
         except Exception as e:
@@ -212,7 +179,6 @@ class DropKillerScraper:
             return []
     
     async def close(self):
-        """Cierra el navegador"""
         if self.browser:
             await self.browser.close()
         if hasattr(self, 'playwright') and self.playwright:
@@ -221,8 +187,6 @@ class DropKillerScraper:
 
 # ============== DROPKILLER PUBLIC API ==============
 class DropKillerAPI:
-    """API pública para historial de ventas"""
-    
     BASE_URL = "https://extension-api.dropkiller.com"
     
     def __init__(self):
@@ -239,6 +203,8 @@ class DropKillerAPI:
         all_results = []
         seen_ids = set()
         
+        print(f"      Consultando API en batches de 10...")
+        
         for i in range(0, len(product_ids), 10):
             batch = product_ids[i:i+10]
             ids_str = ",".join(batch)
@@ -246,6 +212,8 @@ class DropKillerAPI:
             
             try:
                 response = self.session.get(url, timeout=30)
+                print(f"      Batch {i//10 + 1}: status={response.status_code}, items={len(response.json()) if response.status_code == 200 else 0}")
+                
                 if response.status_code == 200:
                     data = response.json()
                     if isinstance(data, list):
@@ -254,8 +222,8 @@ class DropKillerAPI:
                             if ext_id and ext_id not in seen_ids:
                                 seen_ids.add(ext_id)
                                 all_results.append(item)
-            except:
-                pass
+            except Exception as e:
+                print(f"      Batch {i//10 + 1}: error={e}")
         
         return all_results
 
@@ -403,7 +371,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper Automático v1.2")
+    print("  ESTRATEGAS IA - Scraper Automático v1.3")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
@@ -433,12 +401,13 @@ async def main():
         
         print(f"\n[FASE 3] Obteniendo historial de {len(product_ids)} productos...")
         products = api.get_history(product_ids, args.country)
-        products_with_data = [p for p in products if p.get("history")]
+        products_with_data = [p for p in products if p.get("history") and len(p.get("history", [])) > 0]
         
         print(f"  [✓] {len(products_with_data)} productos con historial")
         
         if not products_with_data:
-            print("No hay productos con historial")
+            print("\n  No hay productos con historial de ventas.")
+            print("  Los IDs extraídos pueden no estar siendo trackeados.")
             return
         
         print(f"\n[FASE 4] Analizando productos...\n")
