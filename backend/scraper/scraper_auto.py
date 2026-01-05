@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.1
-Paginación por URL (&page=X) para obtener todos los productos
+Scraper Automático de DropKiller - Estrategas IA v4.2
+Paginación forzada por URL sin depender de parsing de total
 """
 
 import os
@@ -231,36 +231,16 @@ class DropKillerScraper:
         
         all_products = []
         seen_ids = set()
+        consecutive_empty = 0
         
         try:
             for page_num in range(1, max_pages + 1):
                 # Construir URL con paginación
                 url = f"https://app.dropkiller.com/dashboard/products?country={country_id}&limit=50&page={page_num}&s7min={min_sales}"
                 
-                print(f"      Página {page_num}/{max_pages}...")
+                print(f"      Página {page_num}/{max_pages}...", end=" ", flush=True)
                 await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                await asyncio.sleep(5)
-                
-                # En la primera página, obtener total de páginas
-                if page_num == 1:
-                    page_info = await self.page.evaluate('''() => {
-                        const text = document.body.innerText;
-                        // Buscar "Página X de Y" o "de XXXX" productos
-                        const pageMatch = text.match(/Página\\s+\\d+\\s+de\\s+(\\d+)/i);
-                        const totalMatch = text.match(/de\\s+(\\d+)\\s*$/m);
-                        return {
-                            totalPages: pageMatch ? parseInt(pageMatch[1]) : 1,
-                            totalProducts: totalMatch ? parseInt(totalMatch[1]) : 0
-                        };
-                    }''')
-                    total_pages = page_info.get('totalPages', 1)
-                    total_products = page_info.get('totalProducts', 0)
-                    print(f"      Total: {total_products} productos en {total_pages} páginas")
-                    
-                    # Ajustar max_pages si hay menos páginas disponibles
-                    actual_max_pages = min(max_pages, total_pages)
-                    if actual_max_pages < max_pages:
-                        print(f"      Ajustando a {actual_max_pages} páginas disponibles")
+                await asyncio.sleep(4)
                 
                 # Scroll para cargar todo
                 for _ in range(3):
@@ -281,27 +261,31 @@ class DropKillerScraper:
                         all_products.append(p)
                         new_count += 1
                 
-                print(f"        Extraídos: {len(page_products)} ({new_count} nuevos) | Total: {len(all_products)}")
+                print(f"→ {len(page_products)} extraídos, {new_count} nuevos | Total: {len(all_products)}")
+                
+                # Si no hay productos nuevos, incrementar contador
+                if new_count == 0:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        print(f"      ✓ Sin productos nuevos en 2 páginas seguidas, terminando...")
+                        break
+                else:
+                    consecutive_empty = 0
                 
                 # Si ya tenemos suficientes, parar
                 if len(all_products) >= max_products:
                     print(f"      ✓ Alcanzado límite de {max_products} productos")
                     break
                 
-                # Si no se encontraron productos, probablemente llegamos al final
+                # Si la página no tenía productos, probablemente llegamos al final
                 if len(page_products) == 0:
-                    print(f"      ✓ Sin más productos, terminando...")
-                    break
-                
-                # Verificar si llegamos a la última página
-                if page_num >= total_pages:
-                    print(f"      ✓ Última página alcanzada")
+                    print(f"      ✓ Página vacía, terminando...")
                     break
             
             # Guardar screenshot final
             await self.page.screenshot(path='debug_products.png')
             
-            # Filtrar por ventas mínimas (por si acaso)
+            # Filtrar por ventas mínimas
             all_products = [p for p in all_products if p.get('sales7d', 0) >= min_sales][:max_products]
             
             print(f"  [✓] Total: {len(all_products)} productos con ventas >= {min_sales}")
@@ -441,7 +425,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.1 (paginación por URL)")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.2")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas a scrapear")
@@ -459,7 +443,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v4.1 (paginación por URL)")
+    print("  ESTRATEGAS IA - Scraper v4.2")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
