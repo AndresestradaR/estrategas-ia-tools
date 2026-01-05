@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v5.0
-NUEVO: Extracción de UUID + API histórico 6 meses + Análisis de tendencia real
+Scraper Automático de DropKiller - Estrategas IA v5.1
+FIX: Extracción de UUID desde HTML de fila (no hay enlaces <a>)
 """
 
 import os
@@ -227,7 +227,7 @@ class TrendAnalyzer:
             return "ESTABLE", 55
 
 
-# ============== DROPKILLER SCRAPER v5 ==============
+# ============== DROPKILLER SCRAPER v5.1 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -314,33 +314,37 @@ class DropKillerScraper:
             return False
     
     async def extract_products_with_uuid(self) -> List[Dict]:
-        """Extrae productos incluyendo el UUID del enlace Ver detalle"""
+        """Extrae productos incluyendo el UUID buscando en el HTML de cada fila"""
         return await self.page.evaluate('''() => {
             const products = [];
             const seen = new Set();
             
-            // Buscar todos los enlaces "Ver detalle"
-            const links = document.querySelectorAll('a[href*="/dashboard/tracking/detail/"]');
+            // Buscar todos los botones "Ver detalle"
+            const buttons = Array.from(document.querySelectorAll('button')).filter(b => 
+                b.innerText && b.innerText.includes('Ver detalle')
+            );
             
-            for (const link of links) {
-                // Extraer UUID del href
-                const href = link.getAttribute('href') || '';
-                const uuidMatch = href.match(/detail\\/([a-f0-9-]{36})/);
-                if (!uuidMatch) continue;
-                
-                const uuid = uuidMatch[1];
-                
-                // Buscar la fila del producto
-                let row = link.parentElement;
-                for (let i = 0; i < 10 && row; i++) {
+            for (const btn of buttons) {
+                // Subir hasta encontrar la fila del producto
+                let row = btn.parentElement;
+                for (let i = 0; i < 6 && row; i++) {
                     const text = row.innerText || '';
-                    if (text.includes('Stock:') && text.includes('COP') && text.includes('Ver detalle')) {
+                    if (text.includes('Stock:') && text.includes('COP')) {
                         break;
                     }
                     row = row.parentElement;
                 }
                 
                 if (!row) continue;
+                
+                // Buscar UUIDs en el HTML de la fila
+                const html = row.innerHTML || '';
+                const uuidMatches = html.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/g);
+                const uniqueUuids = [...new Set(uuidMatches || [])];
+                
+                // El primer UUID suele ser el del producto, el segundo del proveedor
+                if (uniqueUuids.length === 0) continue;
+                const uuid = uniqueUuids[0];
                 
                 const text = row.innerText || '';
                 const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
@@ -451,9 +455,6 @@ class DropKillerScraper:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=months * 30)
             date_range = f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
-            
-            # Preparar el request body
-            body = json.dumps([uuid, date_range])
             
             # Hacer la llamada usando la página de Playwright (mantiene cookies)
             result = await self.page.evaluate('''async (params) => {
@@ -672,7 +673,7 @@ def calculate_margin(cost_price: int) -> Dict:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v5.0 con Análisis de Tendencia")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v5.1 con Análisis de Tendencia")
     parser.add_argument("--min-sales", type=int, default=30, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos a extraer")
     parser.add_argument("--max-history", type=int, default=50, help="Máx productos para análisis de histórico")
@@ -687,7 +688,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 70)
-    print("  ESTRATEGAS IA - Scraper v5.0 | Análisis de Tendencia 6 Meses")
+    print("  ESTRATEGAS IA - Scraper v5.1 | Análisis de Tendencia 6 Meses")
     print("=" * 70)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Análisis histórico: {args.max_history}")
