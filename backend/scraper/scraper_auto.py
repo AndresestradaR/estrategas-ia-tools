@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v1.3
-Con debug de IDs
+Scraper Automático de DropKiller - Estrategas IA v2.0
+Extrae datos directamente de la tabla de productos (no depende de API externa)
 """
 
 import os
@@ -50,7 +50,7 @@ class SupabaseClient:
         return response.status_code in [200, 201, 204]
 
 
-# ============== DROPKILLER SCRAPER ==============
+# ============== DROPKILLER SCRAPER v2 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str):
         self.email = email
@@ -93,7 +93,6 @@ class DropKillerScraper:
             
             if not email_input:
                 print("  [✗] No se encontró campo de email")
-                await self.page.screenshot(path="debug_login.png")
                 return False
             
             print("      Ingresando email...")
@@ -112,7 +111,6 @@ class DropKillerScraper:
             
             if not password_input:
                 print("  [✗] No se encontró campo de contraseña")
-                await self.page.screenshot(path="debug_login.png")
                 return False
             
             print("      Ingresando contraseña...")
@@ -135,19 +133,14 @@ class DropKillerScraper:
                 if '/dashboard' in self.page.url:
                     print("  [✓] Login exitoso")
                     return True
-                print("  [✗] No se redirigió al dashboard")
-                await self.page.screenshot(path="debug_login.png")
                 return False
             
         except Exception as e:
             print(f"  [✗] Error en login: {e}")
-            try:
-                await self.page.screenshot(path="debug_login.png")
-            except:
-                pass
             return False
     
-    async def get_product_ids(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[str]:
+    async def get_products_from_table(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[Dict]:
+        """Extrae productos directamente de la tabla de DropKiller"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
@@ -155,27 +148,141 @@ class DropKillerScraper:
         
         try:
             await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
-            await asyncio.sleep(5)
+            print("      Esperando que cargue la tabla...")
+            await asyncio.sleep(8)
             
-            print("      Cargando productos...")
-            for i in range(5):
+            # Scroll para cargar más productos
+            print("      Cargando más productos (scroll)...")
+            for i in range(10):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await asyncio.sleep(1)
             
-            html = await self.page.content()
+            # Volver arriba
+            await self.page.evaluate('window.scrollTo(0, 0)')
+            await asyncio.sleep(1)
             
-            # Buscar números de 6-7 dígitos
-            matches = re.findall(r'\b(\d{6,7})\b', html)
-            ids = list(set(matches))
-            ids = [id for id in ids if int(id) > 100000][:max_products]
+            print("      Extrayendo datos de la tabla...")
             
-            print(f"  [✓] Encontrados {len(ids)} IDs de productos")
-            print(f"      Primeros 10 IDs: {ids[:10]}")
+            # Extraer datos usando JavaScript en el navegador
+            products = await self.page.evaluate('''() => {
+                const products = [];
+                
+                // Buscar filas de la tabla o cards de productos
+                const rows = document.querySelectorAll('tr, [class*="product-card"], [class*="ProductCard"]');
+                
+                rows.forEach(row => {
+                    const text = row.innerText || '';
+                    const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
+                    
+                    // Buscar ID externo (6-7 dígitos)
+                    const idMatch = text.match(/\\b(\\d{6,7})\\b/);
+                    if (!idMatch) return;
+                    
+                    const externalId = idMatch[1];
+                    
+                    // Buscar ventas (número seguido de "ventas" o "7d" o "30d")
+                    const salesMatch = text.match(/(\\d+)\\s*(?:ventas|7d|und)/i);
+                    const sales7d = salesMatch ? parseInt(salesMatch[1]) : 0;
+                    
+                    // Buscar precio (con $ y formato colombiano)
+                    const priceMatch = text.match(/\\$\\s*([\\d.,]+)/);
+                    let price = 0;
+                    if (priceMatch) {
+                        price = parseInt(priceMatch[1].replace(/[.,]/g, ''));
+                    }
+                    
+                    // Buscar stock
+                    const stockMatch = text.match(/stock[:\\s]*(\\d+)/i) || text.match(/(\\d+)\\s*(?:stock|disponible)/i);
+                    const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
+                    
+                    // Buscar nombre (primera línea que no sea número)
+                    let name = '';
+                    for (const line of lines) {
+                        if (line.length > 5 && !/^[\\d$.,\\s]+$/.test(line) && !line.includes('ventas')) {
+                            name = line.substring(0, 60);
+                            break;
+                        }
+                    }
+                    
+                    if (externalId && (sales7d > 0 || price > 0)) {
+                        products.push({
+                            externalId,
+                            name: name || `Producto ${externalId}`,
+                            sales7d,
+                            price,
+                            stock
+                        });
+                    }
+                });
+                
+                // Eliminar duplicados
+                const seen = new Set();
+                return products.filter(p => {
+                    if (seen.has(p.externalId)) return false;
+                    seen.add(p.externalId);
+                    return true;
+                });
+            }''')
             
-            return ids
+            print(f"      Método 1 (tabla): {len(products)} productos")
+            
+            # Si no encontró suficientes, intentar método alternativo
+            if len(products) < 5:
+                print("      Intentando método alternativo...")
+                products = await self._extract_from_page_data()
+            
+            # Filtrar y limitar
+            products = [p for p in products if p.get('sales7d', 0) >= min_sales or p.get('price', 0) > 0][:max_products]
+            
+            print(f"  [✓] Extraídos {len(products)} productos")
+            
+            if products:
+                print(f"      Ejemplo: {products[0]}")
+            
+            return products
             
         except Exception as e:
             print(f"  [✗] Error extrayendo productos: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    async def _extract_from_page_data(self) -> List[Dict]:
+        """Método alternativo: extraer de __NEXT_DATA__ o window.__data__"""
+        try:
+            data = await self.page.evaluate('''() => {
+                // Intentar __NEXT_DATA__
+                const nextData = document.getElementById('__NEXT_DATA__');
+                if (nextData) {
+                    try {
+                        const parsed = JSON.parse(nextData.textContent);
+                        const props = parsed?.props?.pageProps;
+                        if (props?.products) return props.products;
+                        if (props?.initialData?.products) return props.initialData.products;
+                    } catch(e) {}
+                }
+                
+                // Buscar en window
+                if (window.__NEXT_DATA__?.props?.pageProps?.products) {
+                    return window.__NEXT_DATA__.props.pageProps.products;
+                }
+                
+                return [];
+            }''')
+            
+            if data and len(data) > 0:
+                print(f"      Método 2 (__NEXT_DATA__): {len(data)} productos")
+                # Normalizar formato
+                return [{
+                    'externalId': str(p.get('externalId') or p.get('external_id') or p.get('id', '')),
+                    'name': p.get('name') or p.get('title', ''),
+                    'sales7d': p.get('soldUnits7d') or p.get('sales7d') or p.get('sold_units_7d', 0),
+                    'price': p.get('salePrice') or p.get('price', 0),
+                    'stock': p.get('stock') or p.get('currentStock', 0)
+                } for p in data if p.get('externalId') or p.get('external_id') or p.get('id')]
+            
+            return []
+        except:
             return []
     
     async def close(self):
@@ -185,51 +292,11 @@ class DropKillerScraper:
             await self.playwright.stop()
 
 
-# ============== DROPKILLER PUBLIC API ==============
-class DropKillerAPI:
-    BASE_URL = "https://extension-api.dropkiller.com"
-    
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-        })
-    
-    def get_history(self, product_ids: List[str], country: str = "CO") -> List[Dict]:
-        if not product_ids:
-            return []
-        
-        all_results = []
-        seen_ids = set()
-        
-        print(f"      Consultando API en batches de 10...")
-        
-        for i in range(0, len(product_ids), 10):
-            batch = product_ids[i:i+10]
-            ids_str = ",".join(batch)
-            url = f"{self.BASE_URL}/api/v3/history?ids={ids_str}&country={country}"
-            
-            try:
-                response = self.session.get(url, timeout=30)
-                print(f"      Batch {i//10 + 1}: status={response.status_code}, items={len(response.json()) if response.status_code == 200 else 0}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list):
-                        for item in data:
-                            ext_id = item.get("externalId")
-                            if ext_id and ext_id not in seen_ids:
-                                seen_ids.add(ext_id)
-                                all_results.append(item)
-            except Exception as e:
-                print(f"      Batch {i//10 + 1}: error={e}")
-        
-        return all_results
-
-
 # ============== ANALYZER ==============
 def calculate_margin(cost_price: int) -> Dict:
+    if cost_price <= 0:
+        cost_price = 35000
+    
     shipping = 18000
     cpa = 25000
     effective_rate = 0.63
@@ -257,11 +324,11 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     score = 0
     reasons = []
     
-    history = product.get("history", [])
-    total_sales = sum(d.get("soldUnits", 0) for d in history)
-    recent_sales = sum(d.get("soldUnits", 0) for d in history[-7:]) if len(history) >= 7 else total_sales
-    estimated_stock = max(history[-1].get("stock", 0) if history else 0, recent_sales * 2) if recent_sales > 0 else 0
+    recent_sales = product.get('sales7d', 0)
+    stock = product.get('stock', 0)
+    estimated_stock = max(stock, recent_sales * 2) if recent_sales > 0 else stock
     
+    # Ventas (40 pts)
     if recent_sales >= 100:
         score += 40
         reasons.append(f"🔥 Ventas excelentes: {recent_sales}/7d")
@@ -280,6 +347,7 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     else:
         reasons.append(f"Sin ventas: {recent_sales}/7d")
     
+    # ROI (25 pts)
     roi = margin.get("roi", 0)
     if roi >= 25:
         score += 25
@@ -291,31 +359,21 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
         score += 8
         reasons.append(f"ROI bajo: {roi}%")
     
-    if len(history) >= 4:
-        first = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
-        second = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
-        if second > first * 1.3:
-            score += 20
-            reasons.append("📈 Tendencia en alza")
-        elif second >= first * 0.85:
-            score += 12
-            reasons.append("Tendencia estable")
-        else:
-            score += 5
-            reasons.append("📉 Tendencia a la baja")
-    else:
-        score += 10
+    # Tendencia (20 pts) - sin historial, asumimos estable
+    score += 12
+    reasons.append("Tendencia: N/A")
     
+    # Stock (15 pts)
     if estimated_stock >= 50:
         score += 15
-        reasons.append(f"Stock OK")
+        reasons.append(f"Stock OK: {estimated_stock}")
     elif estimated_stock > 0:
         score += 8
-        reasons.append(f"Stock disponible")
+        reasons.append(f"Stock disponible: {estimated_stock}")
     
     verdict = "EXCELENTE" if score >= 70 else "VIABLE" if score >= 50 else "ARRIESGADO" if score >= 30 else "NO_RECOMENDADO"
     
-    return score, reasons, verdict, total_sales, recent_sales, estimated_stock
+    return score, reasons, verdict, recent_sales, estimated_stock
 
 
 def analyze_with_claude(product: Dict, margin: Dict) -> Dict:
@@ -329,7 +387,7 @@ Costo: ${margin['cost_price']:,} COP
 Precio óptimo: ${margin['optimal_price']:,} COP ({margin['multiplier']}x)
 Margen: ${margin['net_margin']:,} COP
 ROI: {margin['roi']}%
-Ventas 7d: {product.get('recent_sales', 0)}
+Ventas 7d: {product.get('sales7d', 0)}
 
 JSON solo:
 {{"recommendation": "VENDER" o "NO_VENDER", "confidence": 1-10, "optimal_price": numero, "unused_angles": ["angulo1", "angulo2"], "key_insight": "oracion"}}"""
@@ -354,7 +412,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Auto Scraper")
+    parser = argparse.ArgumentParser(description="DropKiller Auto Scraper v2")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
@@ -371,13 +429,13 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper Automático v1.3")
+    print("  ESTRATEGAS IA - Scraper Automático v2.0")
+    print("  (Extracción directa de tabla)")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
     
     scraper = DropKillerScraper(DROPKILLER_EMAIL, DROPKILLER_PASSWORD)
-    api = DropKillerAPI()
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
     
     stats = {"scraped": 0, "analyzed": 0, "recommended": 0}
@@ -390,55 +448,46 @@ async def main():
             print("\nERROR: No se pudo hacer login")
             return
         
-        print("\n[FASE 2] Extrayendo productos")
-        product_ids = await scraper.get_product_ids(args.country, args.min_sales, args.max_products)
+        print("\n[FASE 2] Extrayendo productos de la tabla")
+        products = await scraper.get_products_from_table(args.country, args.min_sales, args.max_products)
         
-        if not product_ids:
-            print("ERROR: No se encontraron productos")
+        if not products:
+            print("\nERROR: No se encontraron productos")
+            print("Prueba con --visible para ver qué pasa")
             return
         
-        stats["scraped"] = len(product_ids)
+        stats["scraped"] = len(products)
         
-        print(f"\n[FASE 3] Obteniendo historial de {len(product_ids)} productos...")
-        products = api.get_history(product_ids, args.country)
-        products_with_data = [p for p in products if p.get("history") and len(p.get("history", [])) > 0]
-        
-        print(f"  [✓] {len(products_with_data)} productos con historial")
-        
-        if not products_with_data:
-            print("\n  No hay productos con historial de ventas.")
-            print("  Los IDs extraídos pueden no estar siendo trackeados.")
-            return
-        
-        print(f"\n[FASE 4] Analizando productos...\n")
+        print(f"\n[FASE 3] Analizando {len(products)} productos...\n")
         
         recommended = []
         
-        for i, product in enumerate(products_with_data, 1):
+        for i, product in enumerate(products, 1):
             ext_id = product.get("externalId", "")
             name = (product.get("name") or "Sin nombre")[:40]
-            cost = product.get("salePrice", 35000)
+            cost = product.get("price", 35000)
+            sales = product.get("sales7d", 0)
             
-            print(f"  [{i}/{len(products_with_data)}] {name}")
+            print(f"  [{i}/{len(products)}] {name}")
             
             margin = calculate_margin(cost)
-            score, reasons, verdict, total_sales, recent_sales, stock = calculate_viability(product, margin)
+            score, reasons, verdict, recent_sales, stock = calculate_viability(product, margin)
             
-            print(f"      Ventas: {recent_sales}/7d | ROI: {margin['roi']}% | Score: {score}")
+            print(f"      Ventas: {sales}/7d | Costo: ${cost:,} | ROI: {margin['roi']}% | Score: {score}")
             
             stats["analyzed"] += 1
             
             ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
-            if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and recent_sales >= 5:
-                product["recent_sales"] = recent_sales
+            if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and sales >= 5:
+                product["sales7d"] = sales
                 ai_result = analyze_with_claude(product, margin)
             
-            is_recommended = score >= 50 and margin["roi"] >= 15 and recent_sales >= 10 and ai_result.get("recommendation") != "NO_VENDER"
+            is_recommended = score >= 50 and margin["roi"] >= 15 and sales >= 10 and ai_result.get("recommendation") != "NO_VENDER"
             
             if is_recommended:
                 stats["recommended"] += 1
                 print(f"      ✅ RECOMENDADO")
-                recommended.append({"name": name, "sales": recent_sales, "margin": margin["net_margin"], "score": score})
+                recommended.append({"name": name, "sales": sales, "margin": margin["net_margin"], "score": score})
             
             data = {
                 "external_id": ext_id,
@@ -448,8 +497,8 @@ async def main():
                 "cost_price": cost,
                 "suggested_price": margin["optimal_price"],
                 "optimal_price": ai_result.get("optimal_price", margin["optimal_price"]),
-                "sales_7d": recent_sales,
-                "sales_30d": total_sales,
+                "sales_7d": sales,
+                "sales_30d": sales * 4,
                 "current_stock": stock,
                 "real_margin": margin["net_margin"],
                 "roi": margin["roi"],
@@ -475,7 +524,7 @@ async def main():
         
         if recommended:
             print(f"\n  🏆 TOP RECOMENDADOS:")
-            for p in sorted(recommended, key=lambda x: x["score"], reverse=True)[:5]:
+            for p in sorted(recommended, key=lambda x: x["score"], reverse=True)[:10]:
                 print(f"     • {p['name'][:35]} | Ventas: {p['sales']}/7d | Margen: ${p['margin']:,}")
         
         print("=" * 65)
