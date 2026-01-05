@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v1.1
-Login corregido para Clerk Auth
+Scraper Automático de DropKiller - Estrategas IA v1.2
+Timeouts ajustados
 """
 
 import os
@@ -67,111 +67,105 @@ class DropKillerScraper:
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
             headless=headless,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
         )
         self.context = await self.browser.new_context(
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
         self.page = await self.context.new_page()
+        self.page.set_default_timeout(60000)  # 60 segundos default
     
     async def login(self) -> bool:
         """Login en DropKiller usando Clerk"""
         print("  [1] Iniciando login en DropKiller...")
         
         try:
-            await self.page.goto('https://app.dropkiller.com/sign-in', wait_until='networkidle')
-            await asyncio.sleep(3)
+            # Navegar - usar domcontentloaded en lugar de networkidle
+            print("      Cargando página de login...")
+            await self.page.goto('https://app.dropkiller.com/sign-in', wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(5)  # Esperar que cargue Clerk
             
-            # Clerk Auth - Buscar campo de email por diferentes selectores
-            email_selectors = [
-                'input[name="identifier"]',
-                'input[id="identifier-field"]',
-                'input[type="email"]',
-                'input[placeholder*="correo"]',
-                'input[placeholder*="email"]',
-                '.cl-formFieldInput[name="identifier"]',
-            ]
+            print("      Buscando campo de email...")
             
+            # Clerk Auth - Buscar campo de email
             email_input = None
-            for selector in email_selectors:
+            try:
+                email_input = await self.page.wait_for_selector('input#identifier-field', timeout=10000)
+            except:
+                pass
+            
+            if not email_input:
                 try:
-                    email_input = await self.page.wait_for_selector(selector, timeout=3000)
-                    if email_input:
-                        print(f"      Email field: {selector}")
-                        break
+                    email_input = await self.page.wait_for_selector('input[name="identifier"]', timeout=5000)
                 except:
-                    continue
+                    pass
+            
+            if not email_input:
+                try:
+                    email_input = await self.page.wait_for_selector('input[type="email"]', timeout=5000)
+                except:
+                    pass
             
             if not email_input:
                 print("  [✗] No se encontró campo de email")
-                # Guardar screenshot para debug
                 await self.page.screenshot(path="debug_login.png")
                 print("      Screenshot guardado: debug_login.png")
                 return False
             
+            print("      Ingresando email...")
             await email_input.fill(self.email)
             await asyncio.sleep(1)
             
             # Buscar campo de contraseña
-            password_selectors = [
-                'input[name="password"]',
-                'input[id="password-field"]',
-                'input[type="password"]',
-                '.cl-formFieldInput[type="password"]',
-            ]
-            
+            print("      Buscando campo de contraseña...")
             password_input = None
-            for selector in password_selectors:
+            try:
+                password_input = await self.page.wait_for_selector('input#password-field', timeout=5000)
+            except:
+                pass
+            
+            if not password_input:
                 try:
-                    password_input = await self.page.wait_for_selector(selector, timeout=3000)
-                    if password_input:
-                        print(f"      Password field: {selector}")
-                        break
+                    password_input = await self.page.wait_for_selector('input[type="password"]', timeout=5000)
                 except:
-                    continue
+                    pass
             
             if not password_input:
                 print("  [✗] No se encontró campo de contraseña")
                 await self.page.screenshot(path="debug_login.png")
                 return False
             
+            print("      Ingresando contraseña...")
             await password_input.fill(self.password)
             await asyncio.sleep(1)
             
-            # Buscar botón de submit
-            submit_selectors = [
-                'button:has-text("Iniciar sesión")',
-                'button:has-text("Sign in")',
-                'button:has-text("Continue")',
-                'button:has-text("Continuar")',
-                'button.cl-formButtonPrimary',
-                'form button[type="submit"]:visible',
-                'button[data-localization-key="formButtonPrimary"]',
-            ]
-            
-            submit_btn = None
-            for selector in submit_selectors:
-                try:
-                    submit_btn = await self.page.wait_for_selector(selector, timeout=2000)
-                    if submit_btn and await submit_btn.is_visible():
-                        print(f"      Submit button: {selector}")
-                        break
-                except:
-                    continue
-            
-            if not submit_btn:
-                # Intentar con Enter
-                print("      Intentando con Enter...")
-                await password_input.press('Enter')
-            else:
+            # Click en submit o presionar Enter
+            print("      Enviando formulario...")
+            try:
+                submit_btn = await self.page.wait_for_selector('button:has-text("Iniciar")', timeout=3000)
                 await submit_btn.click()
+            except:
+                try:
+                    submit_btn = await self.page.wait_for_selector('button:has-text("Continue")', timeout=3000)
+                    await submit_btn.click()
+                except:
+                    await password_input.press('Enter')
             
             # Esperar redirección al dashboard
-            print("      Esperando redirección...")
-            await self.page.wait_for_url('**/dashboard**', timeout=30000)
-            print("  [✓] Login exitoso")
-            return True
+            print("      Esperando redirección al dashboard...")
+            try:
+                await self.page.wait_for_url('**/dashboard**', timeout=30000)
+                print("  [✓] Login exitoso")
+                return True
+            except:
+                # Verificar si ya estamos en el dashboard
+                if '/dashboard' in self.page.url:
+                    print("  [✓] Login exitoso")
+                    return True
+                print("  [✗] No se redirigió al dashboard")
+                await self.page.screenshot(path="debug_login.png")
+                return False
             
         except Exception as e:
             print(f"  [✗] Error en login: {e}")
@@ -191,7 +185,7 @@ class DropKillerScraper:
         url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30&limit=100"
         
         try:
-            await self.page.goto(url, wait_until='networkidle')
+            await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
             await asyncio.sleep(5)
             
             # Scroll para cargar más productos
@@ -234,12 +228,11 @@ class DropKillerAPI:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0",
             "Accept": "application/json",
         })
     
     def get_history(self, product_ids: List[str], country: str = "CO") -> List[Dict]:
-        """Obtiene historial de ventas"""
         if not product_ids:
             return []
         
@@ -269,7 +262,6 @@ class DropKillerAPI:
 
 # ============== ANALYZER ==============
 def calculate_margin(cost_price: int) -> Dict:
-    """Calcula margen para dropshipping COD Colombia"""
     shipping = 18000
     cpa = 25000
     effective_rate = 0.63
@@ -294,7 +286,6 @@ def calculate_margin(cost_price: int) -> Dict:
 
 
 def calculate_viability(product: Dict, margin: Dict) -> tuple:
-    """Calcula viabilidad del producto"""
     score = 0
     reasons = []
     
@@ -303,7 +294,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     recent_sales = sum(d.get("soldUnits", 0) for d in history[-7:]) if len(history) >= 7 else total_sales
     estimated_stock = max(history[-1].get("stock", 0) if history else 0, recent_sales * 2) if recent_sales > 0 else 0
     
-    # Ventas (40 pts)
     if recent_sales >= 100:
         score += 40
         reasons.append(f"🔥 Ventas excelentes: {recent_sales}/7d")
@@ -322,7 +312,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     else:
         reasons.append(f"Sin ventas: {recent_sales}/7d")
     
-    # ROI (25 pts)
     roi = margin.get("roi", 0)
     if roi >= 25:
         score += 25
@@ -334,7 +323,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
         score += 8
         reasons.append(f"ROI bajo: {roi}%")
     
-    # Tendencia (20 pts)
     if len(history) >= 4:
         first = sum(d.get("soldUnits", 0) for d in history[:len(history)//2])
         second = sum(d.get("soldUnits", 0) for d in history[len(history)//2:])
@@ -350,7 +338,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
     else:
         score += 10
     
-    # Stock (15 pts)
     if estimated_stock >= 50:
         score += 15
         reasons.append(f"Stock OK")
@@ -364,7 +351,6 @@ def calculate_viability(product: Dict, margin: Dict) -> tuple:
 
 
 def analyze_with_claude(product: Dict, margin: Dict) -> Dict:
-    """Analiza con Claude AI"""
     if not ANTHROPIC_API_KEY:
         return {"recommendation": "REVISAR", "unused_angles": [], "optimal_price": margin["optimal_price"]}
     
@@ -402,13 +388,12 @@ JSON solo:
 async def main():
     parser = argparse.ArgumentParser(description="DropKiller Auto Scraper")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
-    parser.add_argument("--max-products", type=int, default=50, help="Máx productos a analizar")
+    parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
-    parser.add_argument("--no-ai", action="store_true", help="Sin análisis Claude")
+    parser.add_argument("--no-ai", action="store_true", help="Sin Claude")
     parser.add_argument("--visible", action="store_true", help="Mostrar navegador")
     args = parser.parse_args()
     
-    # Validar config
     if not DROPKILLER_EMAIL or not DROPKILLER_PASSWORD:
         print("ERROR: Falta DROPKILLER_EMAIL o DROPKILLER_PASSWORD en .env")
         sys.exit(1)
@@ -418,12 +403,11 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper Automático v1.1")
+    print("  ESTRATEGAS IA - Scraper Automático v1.2")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
     
-    # Inicializar
     scraper = DropKillerScraper(DROPKILLER_EMAIL, DROPKILLER_PASSWORD)
     api = DropKillerAPI()
     supabase = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
@@ -431,17 +415,13 @@ async def main():
     stats = {"scraped": 0, "analyzed": 0, "recommended": 0}
     
     try:
-        # 1. Iniciar navegador y login
         print("\n[FASE 1] Login en DropKiller")
         await scraper.init_browser(headless=not args.visible)
         
         if not await scraper.login():
-            print("ERROR: No se pudo hacer login")
-            print("\nPrueba con --visible para ver qué está pasando:")
-            print("  python scraper_auto.py --visible --max-products 5")
+            print("\nERROR: No se pudo hacer login")
             return
         
-        # 2. Extraer IDs de productos
         print("\n[FASE 2] Extrayendo productos")
         product_ids = await scraper.get_product_ids(args.country, args.min_sales, args.max_products)
         
@@ -451,14 +431,16 @@ async def main():
         
         stats["scraped"] = len(product_ids)
         
-        # 3. Obtener historial de ventas
         print(f"\n[FASE 3] Obteniendo historial de {len(product_ids)} productos...")
         products = api.get_history(product_ids, args.country)
         products_with_data = [p for p in products if p.get("history")]
         
         print(f"  [✓] {len(products_with_data)} productos con historial")
         
-        # 4. Analizar productos
+        if not products_with_data:
+            print("No hay productos con historial")
+            return
+        
         print(f"\n[FASE 4] Analizando productos...\n")
         
         recommended = []
@@ -477,13 +459,11 @@ async def main():
             
             stats["analyzed"] += 1
             
-            # IA
             ai_result = {"recommendation": verdict, "unused_angles": [], "optimal_price": margin["optimal_price"]}
             if not args.no_ai and ANTHROPIC_API_KEY and score >= 30 and recent_sales >= 5:
                 product["recent_sales"] = recent_sales
                 ai_result = analyze_with_claude(product, margin)
             
-            # ¿Recomendar?
             is_recommended = score >= 50 and margin["roi"] >= 15 and recent_sales >= 10 and ai_result.get("recommendation") != "NO_VENDER"
             
             if is_recommended:
@@ -491,7 +471,6 @@ async def main():
                 print(f"      ✅ RECOMENDADO")
                 recommended.append({"name": name, "sales": recent_sales, "margin": margin["net_margin"], "score": score})
             
-            # Guardar en Supabase
             data = {
                 "external_id": ext_id,
                 "platform": "dropi",
@@ -518,7 +497,6 @@ async def main():
             
             supabase.upsert("analyzed_products", data)
         
-        # Resumen
         print("\n" + "=" * 65)
         print("  RESUMEN")
         print("=" * 65)
