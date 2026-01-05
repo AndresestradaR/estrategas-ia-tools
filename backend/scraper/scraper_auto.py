@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v3.4
-Filtros mejorados: excluir fechas y marcas sueltas
+Scraper Automático de DropKiller - Estrategas IA v3.5
+Más scroll + cambiar límite en página para obtener más productos
 """
 
 import os
@@ -131,21 +131,34 @@ class DropKillerScraper:
             return False
     
     async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[Dict]:
-        """Extrae productos de DropKiller buscando filas con 'Ver detalle'"""
+        """Extrae productos de DropKiller"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
-        url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30&limit=100"
+        # Usar limit=200 en la URL para obtener más productos
+        url = f"https://app.dropkiller.com/dashboard/products?platform=dropi&country={country_id}&s7min={min_sales}&stock-min=30&limit=200"
         
         try:
             await self.page.goto(url, wait_until='domcontentloaded', timeout=60000)
             print("      Esperando tabla...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(8)
             
-            print("      Scroll para cargar más...")
-            for i in range(12):
+            # Intentar cambiar el selector de "Mostrar" a 100
+            print("      Configurando vista...")
+            try:
+                # Buscar selector de cantidad
+                select = await self.page.query_selector('select, [role="combobox"]')
+                if select:
+                    await select.select_option('100')
+                    await asyncio.sleep(3)
+            except:
+                pass
+            
+            print("      Scroll para cargar más productos...")
+            # Más scrolls para cargar todo
+            for i in range(20):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1)
             
             await self.page.evaluate('window.scrollTo(0, 0)')
             await asyncio.sleep(2)
@@ -158,11 +171,13 @@ class DropKillerScraper:
                 const products = [];
                 const seen = new Set();
                 
-                // Buscar todos los elementos que contienen "Ver detalle"
+                // Buscar todos los botones "Ver detalle"
                 const buttons = document.querySelectorAll('button, a, span');
                 const detailElements = Array.from(buttons).filter(el => 
                     el.innerText && el.innerText.trim() === 'Ver detalle'
                 );
+                
+                console.log('Found Ver detalle buttons:', detailElements.length);
                 
                 for (const btn of detailElements) {
                     // Subir en el DOM hasta encontrar la fila
@@ -196,41 +211,32 @@ class DropKillerScraper:
                     if (validPrices.length >= 1) providerPrice = validPrices[0];
                     if (validPrices.length >= 2) profit = validPrices[1];
                     
-                    // Buscar nombre: primera línea que parece producto
+                    // Buscar nombre
                     const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                     let name = '';
                     
                     for (const line of lines) {
-                        // FILTROS para detectar nombres válidos
-                        
-                        // Excluir fechas (DD/MM/YYYY o similares)
+                        // Excluir fechas
                         if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
-                        
-                        // Excluir líneas que son solo números
+                        // Excluir números
                         if (/^[\\d.,\\s]+$/.test(line)) continue;
-                        
                         // Excluir precios
                         if (/^[\\d.,]+\\s*COP/.test(line)) continue;
-                        
                         // Excluir metadata
                         if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
                         if (line.includes('Ver detalle') || line.includes('ID')) continue;
                         if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
+                        // Longitud válida
+                        if (line.length < 10 || line.length > 80) continue;
                         
-                        // Excluir líneas muy cortas (< 10 chars) - probablemente marcas
-                        if (line.length < 10) continue;
-                        
-                        // Excluir líneas muy largas
-                        if (line.length > 80) continue;
-                        
-                        // Excluir proveedores típicos
+                        // Excluir proveedores
                         const lower = line.toLowerCase();
                         const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
                                                'group', 'china', 'bodeguita', 'inversiones',
                                                'fragance', 'glow', 'perfumeria'];
                         if (providerWords.some(w => lower.includes(w))) continue;
                         
-                        // Excluir si es una sola palabra (marca suelta)
+                        // Excluir marcas sueltas (1 palabra < 15 chars)
                         const words = line.split(/\\s+/);
                         if (words.length === 1 && line.length < 15) continue;
                         
@@ -409,7 +415,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.4")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.5")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
@@ -426,7 +432,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v3.4")
+    print("  ESTRATEGAS IA - Scraper v3.5")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
