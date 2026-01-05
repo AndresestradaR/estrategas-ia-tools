@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v3.2
-Filtrado más estricto para eliminar facturación y proveedores
+Scraper Automático de DropKiller - Estrategas IA v3.3
+Extracción basada en filas de tabla (más productos)
 """
 
 import os
@@ -131,7 +131,7 @@ class DropKillerScraper:
             return False
     
     async def get_products(self, country: str = "CO", min_sales: int = 20, max_products: int = 100) -> List[Dict]:
-        """Extrae productos de DropKiller"""
+        """Extrae productos de DropKiller buscando filas con 'Ver detalle'"""
         print(f"  [2] Navegando a productos (ventas >= {min_sales})...")
         
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
@@ -143,7 +143,7 @@ class DropKillerScraper:
             await asyncio.sleep(10)
             
             print("      Scroll para cargar más...")
-            for i in range(10):
+            for i in range(12):
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
                 await asyncio.sleep(1.5)
             
@@ -152,100 +152,98 @@ class DropKillerScraper:
             
             await self.page.screenshot(path='debug_products.png', full_page=True)
             
-            print("      Extrayendo datos...")
+            print("      Extrayendo datos de filas...")
             
+            # Método: buscar cada fila que contiene "Ver detalle" y extraer sus datos
             products = await self.page.evaluate('''() => {
                 const products = [];
                 const seen = new Set();
-                const bodyText = document.body.innerText;
-                const lines = bodyText.split('\\n').map(l => l.trim()).filter(l => l);
                 
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
+                // Buscar todos los elementos que contienen "Ver detalle"
+                const buttons = document.querySelectorAll('button, a, span');
+                const detailElements = Array.from(buttons).filter(el => 
+                    el.innerText && el.innerText.trim() === 'Ver detalle'
+                );
+                
+                console.log('Found Ver detalle buttons:', detailElements.length);
+                
+                for (const btn of detailElements) {
+                    // Subir en el DOM hasta encontrar la fila (tr o div contenedor)
+                    let row = btn.parentElement;
+                    for (let i = 0; i < 10 && row; i++) {
+                        if (row.tagName === 'TR' || 
+                            (row.innerText && row.innerText.includes('Stock:') && row.innerText.includes('COP'))) {
+                            break;
+                        }
+                        row = row.parentElement;
+                    }
                     
-                    // FILTROS ESTRICTOS para detectar nombres de productos válidos
+                    if (!row) continue;
                     
-                    // 1. Longitud adecuada
-                    if (line.length < 15 || line.length > 80) continue;
+                    const text = row.innerText || '';
+                    if (text.length < 50) continue;
                     
-                    // 2. Excluir líneas que parecen valores monetarios (XXX.XXX.XXX COP o XXX.XXX COP)
-                    if (/^[\\d.,]+\\s*COP$/i.test(line)) continue;
-                    if (/^\\d{1,3}(\\.\\d{3}){2,}/.test(line)) continue;  // 107.354.100
-                    
-                    // 3. Debe tener formato de nombre de producto (mayúsculas, palabras)
-                    if (!/^[A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9\\s\\-.,()x×X]+$/.test(line)) continue;
-                    
-                    // 4. Debe tener al menos 3 palabras (productos tienen descripciones)
-                    const words = line.split(/\\s+/);
-                    if (words.length < 3) continue;
-                    
-                    // 5. Headers de tabla a excluir
-                    const lowerLine = line.toLowerCase();
-                    const excludePatterns = [
-                        'ventas', 'facturación', 'fecha', 'creación', 'producto',
-                        'ganancias', 'precio', 'proveedor', 'stock', 'días',
-                        'página', 'mostrar', 'buscar', 'filtros', 'avanzados'
-                    ];
-                    if (excludePatterns.some(p => lowerLine.includes(p))) continue;
-                    
-                    // 6. Excluir nombres de proveedores (patrones típicos)
-                    const providerPatterns = [
-                        'shop', 'store', 'tienda', 'importaciones', 'mayorista',
-                        'group', 'sion', 'bodeguita', 'china', 'decoracion',
-                        'artes', 'premium', 'quality', 'homie', 'lero',
-                        'americo', 'agrostock', 'inversiones', 'henesys',
-                        'fragance', 'glow', 'fusion', 'selvatica', 'perfumeria'
-                    ];
-                    if (providerPatterns.some(p => lowerLine.includes(p))) continue;
-                    
-                    // 7. Buscar contexto en las siguientes líneas
-                    const nextLines = lines.slice(i + 1, i + 20).join(' ');
-                    
-                    // Debe tener Stock: y COP para ser un producto
-                    if (!nextLines.includes('Stock:') || !nextLines.includes('COP')) continue;
-                    
-                    // 8. Extraer datos
-                    const stockMatch = nextLines.match(/Stock:\\s*(\\d+)/i);
+                    // Extraer Stock
+                    const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
                     const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
                     
-                    const priceMatches = nextLines.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
+                    // Extraer precios (XX.XXX COP)
+                    const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
                     let providerPrice = 0;
                     let profit = 0;
                     
-                    if (priceMatches.length >= 1) {
-                        providerPrice = parseInt(priceMatches[0].replace(/[\\.\\sCOP]/g, ''));
-                    }
-                    if (priceMatches.length >= 2) {
-                        profit = parseInt(priceMatches[1].replace(/[\\.\\sCOP]/g, ''));
-                    }
+                    // Filtrar precios válidos (no facturación total)
+                    const validPrices = priceMatches
+                        .map(p => parseInt(p.replace(/[\\.\\sCOP]/g, '')))
+                        .filter(p => p >= 1000 && p <= 300000);
                     
-                    // Validar precio razonable (2,000 - 200,000 COP)
-                    if (providerPrice < 2000 || providerPrice > 200000) continue;
+                    if (validPrices.length >= 1) providerPrice = validPrices[0];
+                    if (validPrices.length >= 2) profit = validPrices[1];
                     
-                    // Extraer ventas
-                    const afterCOP = nextLines.split('COP').slice(-1)[0] || '';
-                    const salesNumbers = [];
-                    const numMatches = afterCOP.match(/\\b(\\d{1,4})\\b/g) || [];
+                    // Buscar nombre: primera línea que parece producto
+                    const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
+                    let name = '';
                     
-                    for (const n of numMatches) {
-                        const num = parseInt(n);
-                        if (num > 0 && num < 5000 && num !== stock) {
-                            salesNumbers.push(num);
+                    for (const line of lines) {
+                        // Debe ser texto razonable, no números ni metadata
+                        if (line.length >= 10 && line.length <= 80 &&
+                            !/^[\\d.,\\s]+$/.test(line) &&
+                            !/^[\\d.,]+\\s*COP/.test(line) &&
+                            !line.startsWith('Stock:') &&
+                            !line.startsWith('Proveedor:') &&
+                            !line.includes('Ver detalle') &&
+                            !line.includes('ID') &&
+                            !/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) {
+                            
+                            // Verificar que no sea un proveedor típico
+                            const lower = line.toLowerCase();
+                            const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
+                                                   'group', 'china', 'bodeguita', 'inversiones'];
+                            if (providerWords.some(w => lower.includes(w))) continue;
+                            
+                            name = line;
+                            break;
                         }
                     }
                     
-                    let sales7d = salesNumbers.length > 0 ? salesNumbers[0] : 0;
-                    let sales30d = salesNumbers.length > 1 ? salesNumbers[1] : 0;
+                    if (!name || providerPrice === 0) continue;
                     
-                    // Validar ventas razonables (no > 500 por semana típicamente)
-                    if (sales7d > 500) continue;
+                    // Extraer ventas: números después del último COP que no sean stock
+                    const textAfterPrices = text.split('COP').slice(-1)[0] || '';
+                    const nums = textAfterPrices.match(/\\b(\\d{1,4})\\b/g) || [];
+                    const salesCandidates = nums.map(n => parseInt(n))
+                        .filter(n => n > 0 && n < 2000 && n !== stock);
                     
-                    const uniqueKey = line.substring(0, 25) + '_' + providerPrice;
+                    let sales7d = salesCandidates.length > 0 ? salesCandidates[0] : 0;
+                    let sales30d = salesCandidates.length > 1 ? salesCandidates[1] : 0;
+                    
+                    // ID único
+                    const uniqueKey = name.substring(0, 25) + '_' + providerPrice;
                     if (seen.has(uniqueKey)) continue;
                     seen.add(uniqueKey);
                     
                     products.push({
-                        name: line.substring(0, 60),
+                        name: name.substring(0, 60),
                         providerPrice,
                         profit,
                         stock,
@@ -399,7 +397,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.2")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v3.3")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos")
     parser.add_argument("--country", default="CO", help="País (CO, MX, EC)")
@@ -416,7 +414,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v3.2")
+    print("  ESTRATEGAS IA - Scraper v3.3")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales} | Máx: {args.max_products}")
     print("=" * 65)
