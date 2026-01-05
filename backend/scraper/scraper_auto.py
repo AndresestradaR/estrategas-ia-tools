@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.2
-Paginación forzada por URL sin depender de parsing de total
+Scraper Automático de DropKiller - Estrategas IA v4.3
+Corregida extracción de ventas - busca el número correcto en la fila
 """
 
 import os
@@ -131,21 +131,24 @@ class DropKillerScraper:
             return False
     
     async def extract_products_from_page(self) -> List[Dict]:
-        """Extrae productos de la página actual"""
+        """Extrae productos de la página actual - CORREGIDO"""
         return await self.page.evaluate('''() => {
             const products = [];
             const seen = new Set();
             
+            // Buscar todos los botones "Ver detalle"
             const buttons = document.querySelectorAll('button, a, span');
             const detailElements = Array.from(buttons).filter(el => 
                 el.innerText && el.innerText.trim() === 'Ver detalle'
             );
             
             for (const btn of detailElements) {
+                // Subir en el DOM hasta encontrar la fila completa
                 let row = btn.parentElement;
-                for (let i = 0; i < 10 && row; i++) {
-                    if (row.tagName === 'TR' || 
-                        (row.innerText && row.innerText.includes('Stock:') && row.innerText.includes('COP'))) {
+                for (let i = 0; i < 15 && row; i++) {
+                    // La fila tiene Stock: y múltiples COP
+                    const text = row.innerText || '';
+                    if (text.includes('Stock:') && (text.match(/COP/g) || []).length >= 2) {
                         break;
                     }
                     row = row.parentElement;
@@ -156,40 +159,84 @@ class DropKillerScraper:
                 const text = row.innerText || '';
                 if (text.length < 50) continue;
                 
-                const stockMatch = text.match(/Stock:\\s*(\\d+)/i);
-                const stock = stockMatch ? parseInt(stockMatch[1]) : 0;
+                // Debug: mostrar estructura
+                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                 
-                const priceMatches = text.match(/(\\d{1,3}(?:\\.\\d{3})*)\\s*COP/g) || [];
+                // Extraer Stock
+                const stockMatch = text.match(/Stock:\\s*([\\d.,]+)/i);
+                const stock = stockMatch ? parseInt(stockMatch[1].replace(/[.,]/g, '')) : 0;
+                
+                // Extraer TODOS los precios COP
+                const priceMatches = text.match(/([\\d.,]+)\\s*COP/g) || [];
+                const allPrices = priceMatches.map(p => {
+                    const num = p.replace(/[\\sCOP]/g, '').replace(/\\./g, '').replace(',', '.');
+                    return parseInt(num) || 0;
+                });
+                
+                // El primer precio válido (1000-500000) es el precio proveedor
+                // El segundo es la ganancia
                 let providerPrice = 0;
                 let profit = 0;
-                
-                const validPrices = priceMatches
-                    .map(p => parseInt(p.replace(/[\\.\\sCOP]/g, '')))
-                    .filter(p => p >= 1000 && p <= 300000);
-                
+                const validPrices = allPrices.filter(p => p >= 1000 && p <= 500000);
                 if (validPrices.length >= 1) providerPrice = validPrices[0];
                 if (validPrices.length >= 2) profit = validPrices[1];
                 
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
-                let name = '';
+                // VENTAS: Buscar números grandes que NO sean precios ni stock
+                // Las ventas en DropKiller pueden ser de 1 a miles
+                // Están después de las ganancias, antes de "Ver detalle"
                 
-                for (const line of lines) {
-                    if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
-                    if (/^[\\d.,\\s]+$/.test(line)) continue;
-                    if (/^[\\d.,]+\\s*COP/.test(line)) continue;
-                    if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
-                    if (line.includes('Ver detalle') || line.includes('ID')) continue;
-                    if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
-                    if (line.length < 10 || line.length > 80) continue;
+                // Buscar el número de ventas: es un número standalone después de los COP
+                // Estructura típica: "45.000 COP  25.000 COP  49  Ver detalle"
+                const lastCOPIndex = text.lastIndexOf('COP');
+                const textAfterLastCOP = text.substring(lastCOPIndex + 3);
+                
+                // Extraer todos los números del texto después del último COP
+                const numbersAfterCOP = textAfterLastCOP.match(/([\\d.,]+)/g) || [];
+                
+                let sales7d = 0;
+                for (const numStr of numbersAfterCOP) {
+                    // Limpiar el número (puede tener . como separador de miles)
+                    const cleanNum = numStr.replace(/\\./g, '').replace(',', '.');
+                    const num = parseInt(cleanNum) || 0;
                     
+                    // Las ventas son típicamente entre 1 y 10000
+                    // No son el stock ni precios
+                    if (num > 0 && num <= 50000 && num !== stock) {
+                        sales7d = num;
+                        break;
+                    }
+                }
+                
+                // Buscar nombre del producto
+                let name = '';
+                for (const line of lines) {
+                    // Excluir fechas
+                    if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
+                    // Excluir solo números
+                    if (/^[\\d.,\\s]+$/.test(line)) continue;
+                    // Excluir precios
+                    if (/^[\\d.,]+\\s*COP/.test(line)) continue;
+                    if (/COP$/.test(line)) continue;
+                    // Excluir metadata
+                    if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
+                    if (line.includes('Ver detalle') || line === 'ID') continue;
+                    if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
+                    // Longitud válida
+                    if (line.length < 8 || line.length > 80) continue;
+                    
+                    // Excluir proveedores
                     const lower = line.toLowerCase();
                     const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
                                            'group', 'china', 'bodeguita', 'inversiones',
-                                           'fragance', 'glow', 'perfumeria'];
+                                           'fragance', 'glow', 'perfumeria', 'goldbox',
+                                           'vitalcom', 'worldsport', 'homie', 'tulastore',
+                                           'diversidades', 'agrostock', 'krombi', 'fajas',
+                                           'stockeado', 'prendas control', 'dads jackets'];
                     if (providerWords.some(w => lower.includes(w))) continue;
                     
+                    // Excluir marcas sueltas muy cortas
                     const words = line.split(/\\s+/);
-                    if (words.length === 1 && line.length < 15) continue;
+                    if (words.length === 1 && line.length < 12) continue;
                     
                     name = line;
                     break;
@@ -197,14 +244,7 @@ class DropKillerScraper:
                 
                 if (!name || providerPrice === 0) continue;
                 
-                const textAfterPrices = text.split('COP').slice(-1)[0] || '';
-                const nums = textAfterPrices.match(/\\b(\\d{1,4})\\b/g) || [];
-                const salesCandidates = nums.map(n => parseInt(n))
-                    .filter(n => n > 0 && n < 2000 && n !== stock);
-                
-                let sales7d = salesCandidates.length > 0 ? salesCandidates[0] : 0;
-                let sales30d = salesCandidates.length > 1 ? salesCandidates[1] : 0;
-                
+                // ID único
                 const uniqueKey = name.substring(0, 25) + '_' + providerPrice;
                 if (seen.has(uniqueKey)) continue;
                 seen.add(uniqueKey);
@@ -215,7 +255,7 @@ class DropKillerScraper:
                     profit,
                     stock,
                     sales7d,
-                    sales30d,
+                    sales30d: 0,
                     externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
                 });
             }
@@ -425,7 +465,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.2")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.3")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas a scrapear")
@@ -443,7 +483,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print("  ESTRATEGAS IA - Scraper v4.2")
+    print("  ESTRATEGAS IA - Scraper v4.3")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
@@ -488,7 +528,7 @@ async def main():
             margin = calculate_margin(cost)
             score, reasons, verdict, _, _ = calculate_viability(product, margin)
             
-            print(f"      V7d:{sales7d} V30d:{sales30d} | ${cost:,} | ROI:{margin['roi']}%")
+            print(f"      V7d:{sales7d} | ${cost:,} | ROI:{margin['roi']}%")
             
             stats["analyzed"] += 1
             
@@ -542,7 +582,7 @@ async def main():
         if recommended:
             print(f"\n  🏆 TOP 10:")
             for p in sorted(recommended, key=lambda x: x["sales7d"], reverse=True)[:10]:
-                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} V30d:{p['sales30d']} | ${p['cost']:,}")
+                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} | ${p['cost']:,}")
         
         print("=" * 65)
         
