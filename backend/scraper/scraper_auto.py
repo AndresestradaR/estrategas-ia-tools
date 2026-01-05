@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v4.5
-Debug mode que imprime en terminal el texto de las filas
+Scraper Automático de DropKiller - Estrategas IA v4.6
+Extracción correcta: ventas están entre ganancia COP y facturación COP
 """
 
 import os
@@ -158,7 +158,7 @@ class DropKillerScraper:
         }}''')
     
     async def extract_products_from_page(self) -> List[Dict]:
-        """Extrae productos de la página"""
+        """Extrae productos - estructura correcta de DropKiller"""
         return await self.page.evaluate('''() => {
             const products = [];
             const seen = new Set();
@@ -181,53 +181,78 @@ class DropKillerScraper:
                 if (!row) continue;
                 
                 const text = row.innerText || '';
+                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
                 
                 // Extraer Stock
                 const stockMatch = text.match(/Stock:\\s*([\\d.,]+)/i);
                 const stock = stockMatch ? parseInt(stockMatch[1].replace(/[.,]/g, '')) : 0;
                 
-                // Extraer precios (XX.XXX COP)
-                const pricePattern = /([\\d.]+)\\s*COP/g;
-                const prices = [];
-                let match;
-                while ((match = pricePattern.exec(text)) !== null) {
-                    const price = parseInt(match[1].replace(/\\./g, ''));
-                    if (price >= 1000 && price <= 500000) {
-                        prices.push(price);
+                // Estructura de DropKiller:
+                // [nombre, Proveedor:, proveedor, Stock: X, ID, PRECIO COP, GANANCIA COP, V7D, V30D, FACT7D COP, FACT30D COP, fecha, categoria, Ver detalle]
+                
+                // Encontrar índices de líneas con COP
+                const copIndices = [];
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].includes('COP')) {
+                        copIndices.push(i);
                     }
                 }
                 
-                let providerPrice = prices.length > 0 ? prices[0] : 0;
-                let profit = prices.length > 1 ? prices[1] : 0;
+                // Necesitamos al menos 4 COP (precio, ganancia, fact7d, fact30d)
+                if (copIndices.length < 4) continue;
                 
-                // VENTAS: Buscar el número que está justo antes de "Ver detalle"
-                // El patrón es: "XX.XXX COP\\nXX.XXX COP\\n[VENTAS]\\nVer detalle"
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
+                // Precio proveedor = primer COP
+                // Ganancia = segundo COP
+                // Las ventas están ENTRE el segundo COP y el tercer COP
+                const precioLine = lines[copIndices[0]];
+                const gananciaLine = lines[copIndices[1]];
+                
+                // Extraer precio y ganancia
+                const extractPrice = (line) => {
+                    const match = line.match(/([\\d.]+)\\s*COP/);
+                    if (match) {
+                        return parseInt(match[1].replace(/\\./g, ''));
+                    }
+                    return 0;
+                };
+                
+                const providerPrice = extractPrice(precioLine);
+                const profit = extractPrice(gananciaLine);
+                
+                // Ventas 7d y 30d están justo después del segundo COP
+                // Son las líneas entre copIndices[1] y copIndices[2]
                 let sales7d = 0;
+                let sales30d = 0;
                 
-                // Encontrar el índice de "Ver detalle"
-                const verDetalleIndex = lines.findIndex(l => l === 'Ver detalle');
-                if (verDetalleIndex > 0) {
-                    // El número de ventas está justo antes de "Ver detalle"
-                    const salesLine = lines[verDetalleIndex - 1];
-                    // Puede ser "49" o "1.502" (con punto como separador de miles)
-                    const salesNum = salesLine.replace(/\\./g, '').replace(/,/g, '');
-                    if (/^\\d+$/.test(salesNum)) {
-                        sales7d = parseInt(salesNum);
+                const salesStartIndex = copIndices[1] + 1;
+                const salesEndIndex = copIndices[2];
+                
+                const salesLines = [];
+                for (let i = salesStartIndex; i < salesEndIndex; i++) {
+                    const line = lines[i];
+                    // Solo números (pueden tener . como separador de miles)
+                    const cleaned = line.replace(/\\./g, '');
+                    if (/^\\d+$/.test(cleaned)) {
+                        salesLines.push(parseInt(cleaned));
                     }
                 }
                 
-                // Buscar nombre del producto
+                if (salesLines.length >= 1) sales7d = salesLines[0];
+                if (salesLines.length >= 2) sales30d = salesLines[1];
+                
+                // Buscar nombre del producto (primera línea válida)
                 let name = '';
                 for (const line of lines) {
+                    // Excluir líneas no válidas
                     if (/^\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4}$/.test(line)) continue;
                     if (/^[\\d.,\\s]+$/.test(line)) continue;
                     if (/COP/.test(line)) continue;
-                    if (line.startsWith('Stock:') || line.startsWith('Proveedor:')) continue;
+                    if (line.startsWith('Stock:') || line.startsWith('Proveedor:') || line === 'Proveedor:') continue;
                     if (line.includes('Ver detalle') || line === 'ID') continue;
                     if (/^(Ventas|Facturación|Fecha|Página|Mostrar)/i.test(line)) continue;
-                    if (line.length < 8 || line.length > 80) continue;
+                    if (line.length < 5 || line.length > 80) continue;
                     
+                    // Excluir nombres de proveedores conocidos
                     const lower = line.toLowerCase();
                     const providerWords = ['shop', 'store', 'tienda', 'import', 'mayor', 
                                            'group', 'china', 'bodeguita', 'inversiones',
@@ -238,8 +263,10 @@ class DropKillerScraper:
                                            'toons mayorista', 'oh homie'];
                     if (providerWords.some(w => lower.includes(w))) continue;
                     
-                    const words = line.split(/\\s+/);
-                    if (words.length === 1 && line.length < 12) continue;
+                    // Excluir categorías comunes
+                    const categories = ['herramientas', 'belleza', 'deportes', 'hogar', 'salud', 
+                                       'tecnologia', 'moda', 'mascotas', 'bebes', 'cocina'];
+                    if (categories.includes(lower)) continue;
                     
                     name = line;
                     break;
@@ -257,7 +284,7 @@ class DropKillerScraper:
                     profit,
                     stock,
                     sales7d,
-                    sales30d: 0,
+                    sales30d,
                     externalId: uniqueKey.replace(/[^a-zA-Z0-9_]/g, '')
                 });
             }
@@ -295,7 +322,7 @@ class DropKillerScraper:
                     print("\n\n[DEBUG] Texto raw de primeras 3 filas:")
                     for i, row_text in enumerate(raw_rows):
                         print(f"\n--- FILA {i+1} ---")
-                        print(row_text[:500])
+                        print(row_text[:600])
                         print("--- FIN FILA ---")
                     print()
                 
@@ -336,7 +363,7 @@ class DropKillerScraper:
             if all_products:
                 print(f"      Ejemplos:")
                 for p in all_products[:5]:
-                    print(f"        - {p['name'][:40]} | ${p['providerPrice']:,} | V7d:{p['sales7d']}")
+                    print(f"        - {p['name'][:40]} | ${p['providerPrice']:,} | V7d:{p['sales7d']} V30d:{p['sales30d']}")
             
             return all_products
             
@@ -467,7 +494,7 @@ JSON solo:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.5")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v4.6")
     parser.add_argument("--min-sales", type=int, default=20, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas")
@@ -486,7 +513,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 65)
-    print(f"  ESTRATEGAS IA - Scraper v4.5 {'(DEBUG)' if args.debug else ''}")
+    print(f"  ESTRATEGAS IA - Scraper v4.6 {'(DEBUG)' if args.debug else ''}")
     print("=" * 65)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Máx páginas: {args.max_pages}")
@@ -531,7 +558,7 @@ async def main():
             margin = calculate_margin(cost)
             score, reasons, verdict, _, _ = calculate_viability(product, margin)
             
-            print(f"      V7d:{sales7d} | ${cost:,} | ROI:{margin['roi']}%")
+            print(f"      V7d:{sales7d} V30d:{sales30d} | ${cost:,} | ROI:{margin['roi']}%")
             
             stats["analyzed"] += 1
             
@@ -585,7 +612,7 @@ async def main():
         if recommended:
             print(f"\n  🏆 TOP 10:")
             for p in sorted(recommended, key=lambda x: x["sales7d"], reverse=True)[:10]:
-                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} | ${p['cost']:,}")
+                print(f"     • {p['name'][:30]} | V7d:{p['sales7d']} V30d:{p['sales30d']} | ${p['cost']:,}")
         
         print("=" * 65)
         
