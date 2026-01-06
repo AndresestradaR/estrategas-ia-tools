@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v6.1
-FIX: Lógica de veredictos - 1-2 proveedores = OPORTUNIDAD ALTA (no dominado)
+Scraper Automático de DropKiller - Estrategas IA v6.2
+NUEVO: Detección de picos únicos, virales muertos y manipulación de stock
+Analiza consistencia de ventas diarias para identificar productos engañosos
 """
 
 import os
@@ -34,12 +35,17 @@ DROPKILLER_COUNTRIES = {
 
 # Clasificación de tendencias
 TREND_PATTERNS = {
-    "DESPEGANDO": "🚀 Producto nuevo con crecimiento explosivo",
-    "CRECIMIENTO_SOSTENIDO": "📈 Crecimiento constante por varios meses",
+    "DESPEGANDO": "🚀 Crecimiento explosivo Y consistente",
+    "CRECIMIENTO_SOSTENIDO": "📈 Crecimiento constante por varios días",
     "ESTABLE": "📊 Ventas estables, mercado maduro",
-    "DECAYENDO": "📉 Pasó su mejor momento",
+    "DECAYENDO": "📉 Tendencia negativa clara",
     "VOLATIL": "🎢 Picos impredecibles",
-    "NUEVO_SIN_DATOS": "🆕 Muy nuevo para evaluar tendencia"
+    "NUEVO_SIN_DATOS": "🆕 Muy nuevo para evaluar",
+    # NUEVOS - Detección de fraude/engaño
+    "PICO_UNICO": "⚠️ Un solo día tiene >60% de ventas",
+    "VIRAL_MUERTO": "💀 Tuvo un pico y murió",
+    "INCONSISTENTE": "🔴 Muy pocos días con ventas reales",
+    "SOSPECHOSO": "🚨 Posible manipulación de stock"
 }
 
 # Veredictos de mercado
@@ -102,9 +108,9 @@ class SupabaseClient:
         return response.status_code in [200, 201, 204]
 
 
-# ============== TREND ANALYZER ==============
+# ============== TREND ANALYZER v2 ==============
 class TrendAnalyzer:
-    """Analiza histórico de ventas para determinar tendencia"""
+    """Analiza histórico de ventas con detección de picos sospechosos"""
     
     @staticmethod
     def analyze_history(history: List[Dict], created_at: str = None) -> Dict:
@@ -116,12 +122,19 @@ class TrendAnalyzer:
                 "growth_rate_30d": 0,
                 "is_growing": False,
                 "avg_daily": 0,
-                "total_sold": 0
+                "total_sold": 0,
+                "consistency_score": 0,
+                "is_suspicious": False,
+                "days_with_sales": 0
             }
         
-        valid_days = [d for d in history if d.get('soldUnits', 0) > 0 or d.get('externalProductId')]
+        sorted_history = sorted(history, key=lambda x: x.get('date', ''))
         
-        if len(valid_days) < 7:
+        # Extraer ventas diarias
+        daily_sales = [d.get('soldUnits', 0) for d in sorted_history]
+        total_sold = sum(daily_sales)
+        
+        if total_sold == 0:
             return {
                 "trend_pattern": "NUEVO_SIN_DATOS",
                 "trend_score": 0,
@@ -129,14 +142,47 @@ class TrendAnalyzer:
                 "growth_rate_30d": 0,
                 "is_growing": False,
                 "avg_daily": 0,
-                "total_sold": sum(d.get('soldUnits', 0) for d in history)
+                "total_sold": 0,
+                "consistency_score": 0,
+                "is_suspicious": False,
+                "days_with_sales": 0
             }
         
-        sorted_history = sorted(history, key=lambda x: x.get('date', ''))
-        total_sold = sum(d.get('soldUnits', 0) for d in sorted_history)
-        days_active = len([d for d in sorted_history if d.get('soldUnits', 0) > 0])
-        avg_daily = total_sold / max(days_active, 1)
+        # === ANÁLISIS DE CONSISTENCIA ===
+        days_with_sales = len([s for s in daily_sales if s > 0])
+        total_days = len(daily_sales)
         
+        # Consistencia = % de días con ventas
+        consistency_score = (days_with_sales / total_days * 100) if total_days > 0 else 0
+        
+        # Promedio y máximo
+        avg_daily = total_sold / max(days_with_sales, 1)
+        max_daily = max(daily_sales) if daily_sales else 0
+        
+        # === DETECCIÓN DE PICOS SOSPECHOSOS ===
+        # Si el día máximo tiene >50% de las ventas totales = sospechoso
+        max_day_ratio = (max_daily / total_sold * 100) if total_sold > 0 else 0
+        
+        # Top 3 días vs resto
+        sorted_sales = sorted(daily_sales, reverse=True)
+        top_3_sales = sum(sorted_sales[:3])
+        top_3_ratio = (top_3_sales / total_sold * 100) if total_sold > 0 else 0
+        
+        # Detectar pico único (viral muerto o manipulación)
+        is_suspicious = False
+        suspicious_reason = ""
+        
+        if max_day_ratio > 50:
+            is_suspicious = True
+            suspicious_reason = f"Un solo día tiene {max_day_ratio:.0f}% de ventas"
+        elif top_3_ratio > 80 and days_with_sales > 7:
+            is_suspicious = True
+            suspicious_reason = f"3 días tienen {top_3_ratio:.0f}% de ventas"
+        elif consistency_score < 20 and total_days > 30:
+            is_suspicious = True
+            suspicious_reason = f"Solo {consistency_score:.0f}% de días con ventas"
+        
+        # === ANÁLISIS POR PERÍODOS ===
         last_7_days = sorted_history[-7:] if len(sorted_history) >= 7 else sorted_history
         last_30_days = sorted_history[-30:] if len(sorted_history) >= 30 else sorted_history
         prev_30_days = sorted_history[-60:-30] if len(sorted_history) >= 60 else []
@@ -145,15 +191,31 @@ class TrendAnalyzer:
         sales_30d = sum(d.get('soldUnits', 0) for d in last_30_days)
         sales_prev_30d = sum(d.get('soldUnits', 0) for d in prev_30_days) if prev_30_days else 0
         
+        # Días con ventas en últimos 7 y 30 días
+        days_active_7d = len([d for d in last_7_days if d.get('soldUnits', 0) > 0])
+        days_active_30d = len([d for d in last_30_days if d.get('soldUnits', 0) > 0])
+        
         avg_30d = sales_30d / min(len(last_30_days), 30)
         expected_7d = avg_30d * 7
         growth_rate_7d = ((sales_7d - expected_7d) / expected_7d * 100) if expected_7d > 0 else 0
         growth_rate_30d = ((sales_30d - sales_prev_30d) / sales_prev_30d * 100) if sales_prev_30d > 0 else 100
         
+        # === CLASIFICACIÓN FINAL ===
         trend_pattern, trend_score = TrendAnalyzer._classify_pattern(
-            sales_7d/7, avg_30d, sales_prev_30d/30 if sales_prev_30d else 0,
-            growth_rate_7d, growth_rate_30d,
-            total_sold, days_active, created_at
+            sales_7d=sales_7d,
+            sales_30d=sales_30d,
+            avg_7d=sales_7d/7,
+            avg_30d=avg_30d,
+            growth_7d=growth_rate_7d,
+            growth_30d=growth_rate_30d,
+            total_sold=total_sold,
+            days_with_sales=days_with_sales,
+            days_active_7d=days_active_7d,
+            days_active_30d=days_active_30d,
+            consistency_score=consistency_score,
+            is_suspicious=is_suspicious,
+            max_day_ratio=max_day_ratio,
+            created_at=created_at
         )
         
         return {
@@ -163,12 +225,24 @@ class TrendAnalyzer:
             "growth_rate_30d": round(growth_rate_30d, 1),
             "is_growing": growth_rate_7d > 10 or growth_rate_30d > 20,
             "avg_daily": round(avg_daily, 1),
-            "total_sold": total_sold
+            "total_sold": total_sold,
+            "consistency_score": round(consistency_score, 1),
+            "is_suspicious": is_suspicious,
+            "suspicious_reason": suspicious_reason,
+            "days_with_sales": days_with_sales,
+            "days_active_7d": days_active_7d,
+            "days_active_30d": days_active_30d,
+            "max_daily": max_daily,
+            "max_day_ratio": round(max_day_ratio, 1)
         }
     
     @staticmethod
-    def _classify_pattern(avg_7d, avg_30d, avg_prev_30d, growth_7d, growth_30d, total_sold, days_active, created_at) -> tuple:
-        age_days = days_active
+    def _classify_pattern(sales_7d, sales_30d, avg_7d, avg_30d, growth_7d, growth_30d, 
+                          total_sold, days_with_sales, days_active_7d, days_active_30d,
+                          consistency_score, is_suspicious, max_day_ratio, created_at) -> tuple:
+        
+        # Calcular edad
+        age_days = days_with_sales
         if created_at:
             try:
                 created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
@@ -176,29 +250,75 @@ class TrendAnalyzer:
             except:
                 pass
         
-        if age_days < 90 and growth_7d > 50 and avg_7d > 10:
+        # === FILTROS DE SOSPECHA PRIMERO ===
+        
+        # PICO ÚNICO - Un día tiene >60% de todas las ventas
+        if max_day_ratio > 60:
+            return "PICO_UNICO", 15
+        
+        # VIRAL MUERTO - Tuvo un pico y murió
+        if is_suspicious and days_active_7d <= 2 and sales_7d < sales_30d * 0.1:
+            return "VIRAL_MUERTO", 10
+        
+        # INCONSISTENTE - Muy pocos días con ventas
+        if consistency_score < 15 and days_with_sales > 7:
+            return "INCONSISTENTE", 20
+        
+        # MANIPULACIÓN POSIBLE - Picos aleatorios sin patrón
+        if is_suspicious and consistency_score < 30:
+            return "SOSPECHOSO", 25
+        
+        # === PATRONES POSITIVOS ===
+        
+        # DESPEGANDO - Producto nuevo con crecimiento explosivo Y consistente
+        if age_days < 90 and growth_7d > 50 and avg_7d > 10 and days_active_7d >= 5:
             return "DESPEGANDO", 95
-        if age_days < 90 and growth_30d > 100 and avg_7d > 5:
+        
+        if age_days < 90 and growth_30d > 100 and avg_7d > 5 and days_active_7d >= 4:
             return "DESPEGANDO", 90
-        if age_days >= 90 and growth_30d > 30 and growth_7d > 0:
+        
+        # CRECIMIENTO SOSTENIDO - Consistente y creciendo
+        if days_active_7d >= 5 and growth_7d > 20 and consistency_score > 40:
             return "CRECIMIENTO_SOSTENIDO", 85
-        if age_days >= 60 and growth_30d > 50 and avg_7d > 20:
+        
+        if age_days >= 60 and growth_30d > 30 and days_active_30d >= 15:
             return "CRECIMIENTO_SOSTENIDO", 80
-        if abs(growth_7d) < 20 and abs(growth_30d) < 30 and avg_7d > 5:
-            return ("ESTABLE", 70) if avg_7d > 30 else ("ESTABLE", 60)
-        if growth_7d < -30 and growth_30d < -20:
+        
+        # ESTABLE - Ventas constantes
+        if abs(growth_7d) < 25 and days_active_7d >= 4 and consistency_score > 35:
+            if avg_7d > 20:
+                return "ESTABLE", 75
+            elif avg_7d > 5:
+                return "ESTABLE", 65
+        
+        # === PATRONES NEGATIVOS ===
+        
+        # DECAYENDO - Claramente bajando
+        if growth_7d < -40 and days_active_7d <= 3:
             return "DECAYENDO", 20
-        if growth_30d < -40:
+        
+        if growth_30d < -50:
             return "DECAYENDO", 25
-        if abs(growth_7d) > 50 and abs(growth_30d) > 50:
-            return ("VOLATIL", 50) if avg_7d > 20 else ("VOLATIL", 35)
-        if days_active < 14 or total_sold < 20:
+        
+        # VOLÁTIL - Sube y baja sin patrón claro
+        if abs(growth_7d) > 60 and consistency_score < 50:
+            return "VOLATIL", 35
+        
+        # === CASOS EDGE ===
+        
+        # Muy nuevo para evaluar
+        if days_with_sales < 10 or total_sold < 30:
             return "NUEVO_SIN_DATOS", 40
-        if growth_7d > 0:
+        
+        # Default basado en tendencia reciente
+        if days_active_7d >= 4 and growth_7d > 0:
             return "CRECIMIENTO_SOSTENIDO", 65
-        elif growth_7d < -10:
+        elif days_active_7d >= 3 and abs(growth_7d) < 20:
+            return "ESTABLE", 55
+        elif growth_7d < -20:
             return "DECAYENDO", 35
-        return "ESTABLE", 55
+        
+        return "ESTABLE", 50
 
 
 # ============== MARKET ANALYZER ==============
@@ -311,7 +431,7 @@ class MarketAnalyzer:
             return "SATURADO", f"{num_competitors} competidores, mercado fragmentado"
 
 
-# ============== DROPKILLER SCRAPER v6.1 ==============
+# ============== DROPKILLER SCRAPER v6.2 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -610,6 +730,9 @@ class DropKillerScraper:
             product['trend_score'] = 40
             product['growth_rate_7d'] = 0
             product['is_growing'] = False
+            product['consistency_score'] = 0
+            product['days_active_7d'] = 0
+            product['is_suspicious'] = False
             return product
         
         data = history_data['data']
@@ -627,6 +750,16 @@ class DropKillerScraper:
         product['avg_daily'] = trend_result['avg_daily']
         product['provider_name'] = data.get('provider', {}).get('name', 'N/A')
         product['category'] = data.get('baseCategory', {}).get('name', 'N/A')
+        
+        # Nuevas métricas de consistencia
+        product['consistency_score'] = trend_result.get('consistency_score', 0)
+        product['days_with_sales'] = trend_result.get('days_with_sales', 0)
+        product['days_active_7d'] = trend_result.get('days_active_7d', 0)
+        product['days_active_30d'] = trend_result.get('days_active_30d', 0)
+        product['is_suspicious'] = trend_result.get('is_suspicious', False)
+        product['suspicious_reason'] = trend_result.get('suspicious_reason', '')
+        product['max_daily'] = trend_result.get('max_daily', 0)
+        product['max_day_ratio'] = trend_result.get('max_day_ratio', 0)
         
         return product
     
@@ -703,7 +836,7 @@ def calculate_margin(cost_price: int) -> Dict:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v6.1 - Análisis de Mercado")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v6.2 - Detección de Fraude")
     parser.add_argument("--min-sales", type=int, default=30, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos a extraer")
     parser.add_argument("--top-analyze", type=int, default=15, help="Top N productos para análisis de mercado")
@@ -718,7 +851,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 75)
-    print("  ESTRATEGAS IA - Scraper v6.1 | Análisis de Mercado Completo")
+    print("  ESTRATEGAS IA - Scraper v6.2 | Detección de Fraude + Análisis de Mercado")
     print("=" * 75)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Análisis mercado: Top {args.top_analyze}")
@@ -755,17 +888,57 @@ async def main():
             products[i-1] = product
             
             pattern = product.get('trend_pattern', 'N/A')
-            emoji = "🚀" if pattern == "DESPEGANDO" else "📈" if "CRECIMIENTO" in pattern else "📊" if pattern == "ESTABLE" else "📉" if pattern == "DECAYENDO" else "🎢"
-            print(f"{emoji} {pattern[:15]}")
+            consistency = product.get('consistency_score', 0)
+            days_active = product.get('days_active_7d', 0)
+            
+            # Emojis según patrón
+            emoji_map = {
+                "DESPEGANDO": "🚀",
+                "CRECIMIENTO_SOSTENIDO": "📈", 
+                "ESTABLE": "📊",
+                "DECAYENDO": "📉",
+                "VOLATIL": "🎢",
+                "NUEVO_SIN_DATOS": "🆕",
+                "PICO_UNICO": "⚠️",
+                "VIRAL_MUERTO": "💀",
+                "INCONSISTENTE": "🔴",
+                "SOSPECHOSO": "🚨"
+            }
+            emoji = emoji_map.get(pattern, "❓")
+            
+            # Mostrar info adicional para sospechosos
+            if product.get('is_suspicious'):
+                reason = product.get('suspicious_reason', '')[:30]
+                print(f"{emoji} {pattern[:12]} | ⚠️ {reason}")
+            else:
+                print(f"{emoji} {pattern[:12]} | D7:{days_active}/7 C:{consistency:.0f}%")
             
             await asyncio.sleep(0.3)
         
         # Filtrar productos prometedores para análisis de mercado
-        promising = [p for p in products if p.get('trend_score', 0) >= 60 and p.get('sales7d', 0) >= 50]
+        # NUEVO: Excluir sospechosos y requerir consistencia mínima
+        suspicious_patterns = ["PICO_UNICO", "VIRAL_MUERTO", "INCONSISTENTE", "SOSPECHOSO"]
+        
+        promising = [
+            p for p in products 
+            if p.get('trend_score', 0) >= 60 
+            and p.get('sales7d', 0) >= 50
+            and p.get('trend_pattern') not in suspicious_patterns
+            and p.get('days_active_7d', 0) >= 3  # Mínimo 3 días con ventas en última semana
+        ]
+        
+        # También guardar los sospechosos para mostrar advertencia
+        suspicious = [p for p in products if p.get('trend_pattern') in suspicious_patterns]
+        
         promising.sort(key=lambda x: (x.get('trend_score', 0), x.get('sales7d', 0)), reverse=True)
         top_for_market = promising[:args.top_analyze]
         
         print(f"\n  [✓] {len(promising)} productos prometedores, analizando mercado de {len(top_for_market)}")
+        
+        if suspicious:
+            print(f"  [⚠️] {len(suspicious)} productos SOSPECHOSOS descartados:")
+            for p in suspicious[:5]:
+                print(f"      - {p.get('name', 'N/A')[:30]} ({p.get('trend_pattern')})")
         
         # FASE 4: Análisis de mercado
         print(f"\n[FASE 4] Análisis de mercado ({len(top_for_market)} productos)")
@@ -801,6 +974,8 @@ async def main():
         print(f"  ✅ Oportunidad Media: {len(opportunities_med)}")
         print(f"  ⚠️ Saturado/Dominado: {len(saturated)}")
         print(f"  ❌ Decayendo: {len(declining)}")
+        if suspicious:
+            print(f"  🚨 Sospechosos descartados: {len(suspicious)}")
         
         # Mostrar mejores oportunidades
         if opportunities_high or opportunities_med:
@@ -817,6 +992,7 @@ async def main():
                 print(f"\n  {i}. {emoji} {name}")
                 print(f"     Mercado: {market.total_sales_7d} v/7d | {market.competitor_count} competidores | Líder: {market.leader_share:.0f}%")
                 print(f"     Tu potencial: V7d {prod.get('sales7d', 0)} | Growth {prod.get('growth_rate_7d', 0):+.0f}% | ROI {margin['roi']}%")
+                print(f"     Consistencia: {prod.get('days_active_7d', 0)}/7 días activos | {prod.get('consistency_score', 0):.0f}% consistencia")
                 print(f"     Razón: {market.verdict_reason}")
                 
                 # Mostrar competidores principales
@@ -845,14 +1021,21 @@ async def main():
                     "trend_score": prod.get('trend_score', 0),
                     "growth_rate_7d": prod.get('growth_rate_7d', 0),
                     "is_growing": prod.get('is_growing', False),
-                    # Nuevos campos de mercado
+                    # Métricas de consistencia
+                    "consistency_score": prod.get('consistency_score', 0),
+                    "days_active_7d": prod.get('days_active_7d', 0),
+                    "days_active_30d": prod.get('days_active_30d', 0),
+                    "is_suspicious": prod.get('is_suspicious', False),
+                    "suspicious_reason": prod.get('suspicious_reason', ''),
+                    "max_day_ratio": prod.get('max_day_ratio', 0),
+                    # Campos de mercado
                     "market_total_sales_7d": market.total_sales_7d,
                     "market_competitor_count": market.competitor_count,
                     "market_leader_share": market.leader_share,
                     "market_growth_7d": market.market_growth_7d,
                     "market_verdict": market.verdict,
                     "market_verdict_reason": market.verdict_reason,
-                    "is_recommended": market.verdict in ["OPORTUNIDAD_ALTA", "OPORTUNIDAD_MEDIA"],
+                    "is_recommended": market.verdict in ["OPORTUNIDAD_ALTA", "OPORTUNIDAD_MEDIA"] and not prod.get('is_suspicious', False),
                     "analyzed_at": datetime.now().isoformat()
                 }
                 supabase.upsert("analyzed_products", data)
