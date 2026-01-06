@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v6.0
-NUEVO: Análisis de mercado completo - busca competidores por producto
+Scraper Automático de DropKiller - Estrategas IA v6.1
+FIX: Lógica de veredictos - 1-2 proveedores = OPORTUNIDAD ALTA (no dominado)
 """
 
 import os
@@ -44,11 +44,11 @@ TREND_PATTERNS = {
 
 # Veredictos de mercado
 MARKET_VERDICTS = {
-    "OPORTUNIDAD_ALTA": "🎯 Mercado creciendo con poca competencia",
+    "OPORTUNIDAD_ALTA": "🎯 Poca o nula competencia",
     "OPORTUNIDAD_MEDIA": "✅ Mercado viable, competencia moderada",
     "SATURADO": "⚠️ Muchos competidores, difícil diferenciarse",
     "DECAYENDO": "❌ Mercado en declive, evitar",
-    "DOMINADO": "🏆 Un competidor domina >60% del mercado"
+    "DOMINADO": "🏆 Un competidor domina >50% del mercado"
 }
 
 
@@ -273,34 +273,45 @@ class MarketAnalyzer:
                           leader_share: float, trend: str) -> tuple:
         """Genera veredicto basado en métricas de mercado"""
         
-        # Mercado en declive
-        if trend == "DECAYENDO" or growth < -30:
+        # Mercado en declive severo
+        if growth < -40:
             return "DECAYENDO", f"Mercado cayendo {growth:.0f}%, evitar entrada"
         
-        # Mercado dominado por un jugador
-        if leader_share > 60:
-            return "DOMINADO", f"Líder tiene {leader_share:.0f}% del mercado, difícil competir"
+        # 1-2 competidores = OPORTUNIDAD ALTA (no hay competencia real)
+        if num_competitors <= 2:
+            if growth > 0:
+                return "OPORTUNIDAD_ALTA", f"Solo {num_competitors} proveedor(es), mercado creciendo {growth:.0f}%"
+            elif growth > -20:
+                return "OPORTUNIDAD_ALTA", f"Solo {num_competitors} proveedor(es), sin competencia real"
+            else:
+                return "OPORTUNIDAD_MEDIA", f"Solo {num_competitors} proveedor(es), mercado estable"
         
-        # Mercado saturado
-        if num_competitors >= 8:
-            return "SATURADO", f"{num_competitors} competidores, alta fragmentación"
+        # 3-4 competidores = Buena oportunidad
+        if num_competitors <= 4:
+            if growth > 10:
+                return "OPORTUNIDAD_ALTA", f"{num_competitors} competidores, mercado creciendo {growth:.0f}%"
+            elif growth > -15:
+                return "OPORTUNIDAD_MEDIA", f"{num_competitors} competidores, mercado estable"
+            else:
+                return "DECAYENDO", f"Mercado cayendo {growth:.0f}% con {num_competitors} competidores"
         
-        # Oportunidad alta
-        if num_competitors <= 3 and growth > 20 and total_sales >= 100:
-            return "OPORTUNIDAD_ALTA", f"Solo {num_competitors} competidores, mercado creciendo {growth:.0f}%"
+        # 5-7 competidores = Competitivo
+        if num_competitors <= 7:
+            if leader_share > 50:
+                return "DOMINADO", f"Líder tiene {leader_share:.0f}% con {num_competitors} competidores"
+            elif growth > 0:
+                return "OPORTUNIDAD_MEDIA", f"{num_competitors} competidores pero mercado creciendo"
+            else:
+                return "SATURADO", f"{num_competitors} competidores, mercado estancado"
         
-        # Oportunidad media
-        if num_competitors <= 5 and growth > 0:
-            return "OPORTUNIDAD_MEDIA", f"{num_competitors} competidores, mercado estable/creciendo"
-        
-        # Default
-        if growth > 0:
-            return "OPORTUNIDAD_MEDIA", f"Mercado con {num_competitors} competidores, crecimiento {growth:.0f}%"
+        # 8+ competidores = Saturado
+        if leader_share > 40:
+            return "DOMINADO", f"Líder domina ({leader_share:.0f}%) entre {num_competitors} competidores"
         else:
-            return "SATURADO", f"Mercado estancado con {num_competitors} competidores"
+            return "SATURADO", f"{num_competitors} competidores, mercado fragmentado"
 
 
-# ============== DROPKILLER SCRAPER v6 ==============
+# ============== DROPKILLER SCRAPER v6.1 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -521,11 +532,11 @@ class DropKillerScraper:
         """Busca productos por nombre"""
         country_id = DROPKILLER_COUNTRIES.get(country, DROPKILLER_COUNTRIES["CO"])
         
-        # Limpiar término de búsqueda
+        # Limpiar término de búsqueda - usar solo 2 palabras clave principales
         clean_term = search_term.lower().strip()
-        # Usar las primeras 3-4 palabras clave
-        keywords = clean_term.split()[:4]
-        search_query = "+".join(keywords)
+        # Filtrar palabras cortas y números
+        keywords = [w for w in clean_term.split() if len(w) > 2 and not w.isdigit()][:2]
+        search_query = "+".join(keywords) if keywords else clean_term.split()[0]
         
         url = f"https://app.dropkiller.com/dashboard/products?text={search_query}&country={country_id}&limit={limit}&page=1"
         
@@ -692,7 +703,7 @@ def calculate_margin(cost_price: int) -> Dict:
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v6.0 - Análisis de Mercado")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v6.1 - Análisis de Mercado")
     parser.add_argument("--min-sales", type=int, default=30, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos a extraer")
     parser.add_argument("--top-analyze", type=int, default=15, help="Top N productos para análisis de mercado")
@@ -707,7 +718,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 75)
-    print("  ESTRATEGAS IA - Scraper v6.0 | Análisis de Mercado Completo")
+    print("  ESTRATEGAS IA - Scraper v6.1 | Análisis de Mercado Completo")
     print("=" * 75)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Análisis mercado: Top {args.top_analyze}")
