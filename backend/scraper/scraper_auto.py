@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v7.0
+Scraper Automático de DropKiller - Estrategas IA v7.1
 REDISEÑO COMPLETO: Análisis profundo por ventanas semanales
+FIX: Detecta APARICION_SUBITA cuando no hay historial previo
 """
 
 import os
@@ -84,7 +85,6 @@ class Competitor:
     price: int
     stock: int
     trend: Optional[TrendAnalysis] = None
-    market_share: float = 0
 
 
 @dataclass
@@ -252,6 +252,21 @@ class TrendAnalyzerV2:
         w2 = weeks[2] if len(weeks) > 2 else None
         w3 = weeks[3] if len(weeks) > 3 else None
         
+        # ============== DETECTAR APARICIÓN SÚBITA ==============
+        # Si semanas anteriores están en 0 o muy bajas, es sospechoso
+        if w1 and w2:
+            prev_weeks_sales = (w1.total_sales + w2.total_sales)
+            if prev_weeks_sales <= 5 and w0.total_sales > 20:
+                # Apareció de la nada
+                alerts.append(f"🆕 Sin historial previo (Sem-1: {w1.total_sales}, Sem-2: {w2.total_sales})")
+                alerts.append(f"⚠️ Producto muy nuevo o datos incompletos")
+                return (
+                    "APARICION_SUBITA",
+                    f"Apareció esta semana sin historial previo ({w0.total_sales} ventas vs {prev_weeks_sales} en 2 sem anteriores)",
+                    alerts,
+                    45  # Score bajo porque no hay historial para validar
+                )
+        
         # ============== DETECTAR VIRAL MUERTO ==============
         # Si el pico NO fue esta semana Y actual es menos del 40% del pico
         if peak_week > 0 and peak_vs_current > 2.5:
@@ -281,9 +296,12 @@ class TrendAnalyzerV2:
                     )
         
         # ============== DETECTAR DESPEGANDO ==============
-        # Crecimiento consistente semana a semana
+        # Crecimiento consistente semana a semana - REQUIERE historial
         if w1 and w2:
-            if wow_growth[0] > 20 and (len(wow_growth) < 2 or wow_growth[1] > 0):
+            # Verificar que hay historial real (no solo esta semana)
+            has_history = w1.total_sales > 10 or w2.total_sales > 10
+            
+            if has_history and wow_growth[0] > 20 and (len(wow_growth) < 2 or wow_growth[1] > 0):
                 # Creciendo vs semana anterior Y semana anterior no caía
                 if w0.consistency >= 50:
                     alerts.append(f"✅ Crecimiento: +{wow_growth[0]:.0f}% vs semana anterior")
@@ -301,7 +319,10 @@ class TrendAnalyzerV2:
         
         # ============== DETECTAR CRECIMIENTO SOSTENIDO ==============
         if w1:
-            if wow_growth[0] > 10 and w0.consistency >= 40:
+            # Verificar que hay historial real
+            has_history = w1.total_sales > 10
+            
+            if has_history and wow_growth[0] > 10 and w0.consistency >= 40:
                 alerts.append(f"✅ Creciendo: +{wow_growth[0]:.0f}%")
                 score = min(85, 60 + int(wow_growth[0] / 3))
                 return (
@@ -512,7 +533,7 @@ def calculate_margin(cost_price: int) -> Dict:
     }
 
 
-# ============== DROPKILLER SCRAPER v7 ==============
+# ============== DROPKILLER SCRAPER v7.1 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -858,7 +879,8 @@ def print_product_analysis(rank: int, product: Dict, show_details: bool = True):
         "PICO_UNICO": "⚠️",
         "INCONSISTENTE": "🔴",
         "SIN_DATOS": "❓",
-        "EVALUAR": "🔍"
+        "EVALUAR": "🔍",
+        "APARICION_SUBITA": "🆕"
     }.get(trend.pattern, "❓")
     
     print(f"\n  #{rank}. {name}")
@@ -903,7 +925,8 @@ def print_ranking_summary(products: List[Dict]):
             patterns[trend.pattern].append(p.get('name', 'N/A')[:25])
     
     pattern_order = ["DESPEGANDO", "CRECIMIENTO_SOSTENIDO", "ESTABLE", "EVALUAR", 
-                     "DECAYENDO", "INCONSISTENTE", "PICO_UNICO", "VIRAL_MUERTO", "SIN_DATOS"]
+                     "APARICION_SUBITA", "DECAYENDO", "INCONSISTENTE", "PICO_UNICO", 
+                     "VIRAL_MUERTO", "SIN_DATOS"]
     
     for pattern in pattern_order:
         if pattern in patterns:
@@ -916,7 +939,8 @@ def print_ranking_summary(products: List[Dict]):
                 "PICO_UNICO": "⚠️",
                 "INCONSISTENTE": "🔴",
                 "SIN_DATOS": "❓",
-                "EVALUAR": "🔍"
+                "EVALUAR": "🔍",
+                "APARICION_SUBITA": "🆕"
             }.get(pattern, "❓")
             
             print(f"\n  {emoji} {pattern}: {len(patterns[pattern])} productos")
@@ -928,7 +952,7 @@ def print_ranking_summary(products: List[Dict]):
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v7.0 - Análisis Profundo")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v7.1 - Análisis Profundo")
     parser.add_argument("--min-sales", type=int, default=10, help="Ventas mínimas 7d")
     parser.add_argument("--max-products", type=int, default=50, help="Máx productos a extraer")
     parser.add_argument("--max-pages", type=int, default=3, help="Máx páginas")
@@ -943,7 +967,7 @@ async def main():
         sys.exit(1)
     
     print("=" * 75)
-    print("  ESTRATEGAS IA - Scraper v7.0 | Análisis Profundo por Ventanas")
+    print("  ESTRATEGAS IA - Scraper v7.1 | Análisis Profundo por Ventanas")
     print("=" * 75)
     print(f"  País: {args.country} | Ventas mín: {args.min_sales}")
     print(f"  Máx productos: {args.max_products} | Mostrar top: {args.top}")
@@ -989,7 +1013,8 @@ async def main():
                     "PICO_UNICO": "⚠️",
                     "INCONSISTENTE": "🔴",
                     "SIN_DATOS": "❓",
-                    "EVALUAR": "🔍"
+                    "EVALUAR": "🔍",
+                    "APARICION_SUBITA": "🆕"
                 }.get(trend.pattern, "❓")
                 print(f"{emoji} {trend.pattern[:15]} | Score: {trend.score}")
             else:
