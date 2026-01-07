@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Scraper Automático de DropKiller - Estrategas IA v7.2
+Scraper Automático de DropKiller - Estrategas IA v7.3
 FILTROS DUROS DE EXPERTO:
-- Ventas mínimas: ≥50/7d
+- NUEVO: Historial mínimo 12 semanas con ≥50 ventas CADA UNA
+- Ventas mínimas: ≥50/7d (semana actual)
 - Días activos: ≥4 de 7
 - Caída máxima: -30% WoW
 - ROI mínimo: ≥20%
@@ -37,13 +38,18 @@ DROPKILLER_COUNTRIES = {
     "EC": "82811e8b-d17d-4ab9-847a-fa925785d566",
 }
 
-# ============== FILTROS DUROS v7.2 ==============
+# ============== FILTROS DUROS v7.3 ==============
 FILTROS_EXPERTO = {
-    "min_ventas_7d": 50,          # Mínimo 50 ventas en 7 días
-    "min_dias_activos": 4,         # Mínimo 4 de 7 días con ventas
-    "max_caida_wow": -30,          # Máxima caída -30% semana a semana
-    "min_roi": 20,                 # ROI mínimo 20%
-    "max_costo_vs_pvp": 0.40,      # Costo máximo 40% del PVP
+    # NUEVO: Historial probado
+    "min_semanas_con_ventas": 12,   # Mínimo 12 semanas con ≥50 ventas
+    "min_ventas_por_semana": 50,    # Cada semana debe tener ≥50 ventas
+    
+    # Filtros de semana actual
+    "min_ventas_7d": 50,            # Mínimo 50 ventas en 7 días
+    "min_dias_activos": 4,          # Mínimo 4 de 7 días con ventas
+    "max_caida_wow": -30,           # Máxima caída -30% semana a semana
+    "min_roi": 20,                  # ROI mínimo 20%
+    "max_costo_vs_pvp": 0.40,       # Costo máximo 40% del PVP
     
     # Patrones de descarte automático
     "patrones_descarte": [
@@ -82,6 +88,9 @@ class TrendAnalysis:
     score: int
     peak_week: int
     peak_vs_current: float
+    # NUEVO: Métricas de historial
+    semanas_con_50_ventas: int
+    historial_solido: bool
 
 
 @dataclass
@@ -140,7 +149,7 @@ class ProductAnalysis:
     recommendation: str
 
 
-# ============== FILTRO EXPERTO v7.2 ==============
+# ============== FILTRO EXPERTO v7.3 ==============
 class FiltroExperto:
     """
     Aplica filtros duros de experto para seleccionar solo productos 
@@ -160,13 +169,21 @@ class FiltroExperto:
         
         w0 = trend.weeks[0] if trend.weeks else None
         
+        # ============== FILTRO 0: HISTORIAL MÍNIMO (NUEVO - MÁS IMPORTANTE) ==============
+        semanas_con_50 = trend.semanas_con_50_ventas
+        min_semanas = FILTROS_EXPERTO["min_semanas_con_ventas"]
+        metricas["semanas_con_50_ventas"] = semanas_con_50
+        
+        if semanas_con_50 < min_semanas:
+            razones.append(f"Historial insuficiente: {semanas_con_50}/12 semanas con ≥50 ventas")
+        
         # ============== FILTRO 1: Patrón de descarte automático ==============
         if trend.pattern in FILTROS_EXPERTO["patrones_descarte"]:
             razones.append(f"Patrón descartado: {trend.pattern}")
         
         metricas["patron"] = trend.pattern
         
-        # ============== FILTRO 2: Ventas mínimas ==============
+        # ============== FILTRO 2: Ventas mínimas (semana actual) ==============
         ventas_7d = w0.total_sales if w0 else 0
         metricas["ventas_7d"] = ventas_7d
         
@@ -233,7 +250,9 @@ class FiltroExperto:
                     stats["descartados"] += 1
                     for razon in filtro.razones_descarte:
                         # Extraer categoría principal
-                        if "Patrón" in razon:
+                        if "Historial" in razon:
+                            stats["razones"]["Sin historial 12 sem"] += 1
+                        elif "Patrón" in razon:
                             stats["razones"]["Patrón malo"] += 1
                         elif "Ventas" in razon:
                             stats["razones"]["Pocas ventas"] += 1
@@ -251,10 +270,11 @@ class FiltroExperto:
         return stats
 
 
-# ============== TREND ANALYZER v2 ==============
+# ============== TREND ANALYZER v3 - 12 SEMANAS ==============
 class TrendAnalyzerV2:
     """
     Analizador de tendencias basado en comparación de ventanas semanales.
+    ACTUALIZADO: Analiza 12 semanas completas para validar historial.
     """
     
     @staticmethod
@@ -268,14 +288,14 @@ class TrendAnalyzerV2:
         if not daily_sales or sum(daily_sales) == 0:
             return TrendAnalyzerV2._empty_analysis("Sin ventas registradas")
         
-        # Dividir en semanas
+        # Dividir en 12 semanas (3 meses)
         weeks = []
-        for week_num in range(4):
+        for week_num in range(12):
             start_idx = week_num * 7
             end_idx = start_idx + 7
             week_sales = daily_sales[start_idx:end_idx] if start_idx < len(daily_sales) else []
             
-            if week_sales:
+            if week_sales and len(week_sales) >= 5:  # Al menos 5 días de datos
                 weeks.append(TrendAnalyzerV2._calculate_week_metrics(week_num, week_sales))
             else:
                 weeks.append(WeeklyMetrics(
@@ -283,9 +303,14 @@ class TrendAnalyzerV2:
                     avg_daily=0, max_daily=0, min_daily=0, consistency=0
                 ))
         
-        # Calcular crecimiento WoW
+        # ============== CONTAR SEMANAS CON ≥50 VENTAS ==============
+        min_ventas = FILTROS_EXPERTO["min_ventas_por_semana"]
+        semanas_con_50_ventas = sum(1 for w in weeks if w.total_sales >= min_ventas)
+        historial_solido = semanas_con_50_ventas >= FILTROS_EXPERTO["min_semanas_con_ventas"]
+        
+        # Calcular crecimiento WoW (primeras 4 semanas)
         wow_growth = []
-        for i in range(len(weeks) - 1):
+        for i in range(min(len(weeks) - 1, 3)):
             current = weeks[i].total_sales
             previous = weeks[i + 1].total_sales
             if previous > 0:
@@ -294,7 +319,7 @@ class TrendAnalyzerV2:
                 growth = 100 if current > 0 else 0
             wow_growth.append(round(growth, 1))
         
-        # Detectar pico
+        # Detectar pico (en todas las semanas)
         week_totals = [w.total_sales for w in weeks]
         max_sales = max(week_totals) if week_totals else 0
         peak_week = week_totals.index(max_sales) if max_sales > 0 else 0
@@ -303,7 +328,7 @@ class TrendAnalyzerV2:
         
         # Detectar patrón
         pattern, pattern_reason, alerts, score = TrendAnalyzerV2._detect_pattern(
-            weeks, wow_growth, peak_week, peak_vs_current, daily_sales
+            weeks, wow_growth, peak_week, peak_vs_current, daily_sales, semanas_con_50_ventas
         )
         
         return TrendAnalysis(
@@ -316,7 +341,9 @@ class TrendAnalyzerV2:
             alerts=alerts,
             score=score,
             peak_week=peak_week,
-            peak_vs_current=round(peak_vs_current, 2)
+            peak_vs_current=round(peak_vs_current, 2),
+            semanas_con_50_ventas=semanas_con_50_ventas,
+            historial_solido=historial_solido
         )
     
     @staticmethod
@@ -337,7 +364,7 @@ class TrendAnalyzerV2:
     @staticmethod
     def _detect_pattern(weeks: List[WeeklyMetrics], wow_growth: List[float], 
                         peak_week: int, peak_vs_current: float,
-                        daily_sales: List[int]) -> Tuple[str, str, List[str], int]:
+                        daily_sales: List[int], semanas_con_50: int) -> Tuple[str, str, List[str], int]:
         alerts = []
         
         if not weeks or weeks[0].total_sales == 0:
@@ -347,12 +374,17 @@ class TrendAnalyzerV2:
         w1 = weeks[1] if len(weeks) > 1 else None
         w2 = weeks[2] if len(weeks) > 2 else None
         
+        # Agregar alerta de historial
+        if semanas_con_50 < 12:
+            alerts.append(f"⚠️ Solo {semanas_con_50}/12 semanas con ≥50 ventas")
+        else:
+            alerts.append(f"✅ Historial sólido: {semanas_con_50} semanas con ≥50 ventas")
+        
         # APARICIÓN SÚBITA
         if w1 and w2:
             prev_weeks_sales = (w1.total_sales + w2.total_sales)
             if prev_weeks_sales <= 5 and w0.total_sales > 20:
                 alerts.append(f"🆕 Sin historial previo (Sem-1: {w1.total_sales}, Sem-2: {w2.total_sales})")
-                alerts.append(f"⚠️ Producto muy nuevo o datos incompletos")
                 return (
                     "APARICION_SUBITA",
                     f"Apareció esta semana sin historial previo ({w0.total_sales} ventas vs {prev_weeks_sales} en 2 sem anteriores)",
@@ -387,7 +419,7 @@ class TrendAnalyzerV2:
         # DESPEGANDO
         if w1 and w2:
             has_history = w1.total_sales > 10 or w2.total_sales > 10
-            if has_history and wow_growth[0] > 20 and (len(wow_growth) < 2 or wow_growth[1] > 0):
+            if has_history and wow_growth and wow_growth[0] > 20 and (len(wow_growth) < 2 or wow_growth[1] > 0):
                 if w0.consistency >= 50:
                     alerts.append(f"✅ Crecimiento: +{wow_growth[0]:.0f}% vs semana anterior")
                     alerts.append(f"✅ Activo {w0.days_with_sales}/7 días")
@@ -399,7 +431,7 @@ class TrendAnalyzerV2:
                     )
         
         # CRECIMIENTO SOSTENIDO
-        if w1:
+        if w1 and wow_growth:
             has_history = w1.total_sales > 10
             if has_history and wow_growth[0] > 10 and w0.consistency >= 40:
                 alerts.append(f"✅ Creciendo: +{wow_growth[0]:.0f}%")
@@ -411,7 +443,7 @@ class TrendAnalyzerV2:
                 )
         
         # ESTABLE
-        if w1:
+        if w1 and wow_growth:
             if abs(wow_growth[0]) <= 20 and w0.consistency >= 40:
                 alerts.append(f"📊 Variación: {wow_growth[0]:+.0f}%")
                 alerts.append(f"📊 Consistencia: {w0.consistency:.0f}%")
@@ -423,7 +455,7 @@ class TrendAnalyzerV2:
                 )
         
         # DECAYENDO
-        if w1:
+        if w1 and wow_growth:
             if wow_growth[0] < -20:
                 alerts.append(f"📉 Cayendo: {wow_growth[0]:.0f}%")
                 score = max(20, 50 + int(wow_growth[0] / 2))
@@ -451,7 +483,8 @@ class TrendAnalyzerV2:
         return TrendAnalysis(
             weeks=[], total_sold=0, total_days=0, week_over_week_growth=[],
             pattern="SIN_DATOS", pattern_reason=reason, alerts=["❌ " + reason],
-            score=0, peak_week=0, peak_vs_current=0
+            score=0, peak_week=0, peak_vs_current=0,
+            semanas_con_50_ventas=0, historial_solido=False
         )
 
 
@@ -544,7 +577,7 @@ def calculate_margin(cost_price: int) -> Dict:
     }
 
 
-# ============== DROPKILLER SCRAPER v7.2 ==============
+# ============== DROPKILLER SCRAPER v7.3 ==============
 class DropKillerScraper:
     def __init__(self, email: str, password: str, debug: bool = False):
         self.email = email
@@ -721,7 +754,8 @@ class DropKillerScraper:
             return products;
         }''')
     
-    async def get_product_history(self, uuid: str, months: int = 3) -> Optional[Dict]:
+    async def get_product_history(self, uuid: str, months: int = 6) -> Optional[Dict]:
+        """Obtiene historial extendido (6 meses para cubrir 12+ semanas)"""
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=months * 30)
@@ -804,7 +838,8 @@ class DropKillerScraper:
         if not uuid:
             return product
         
-        history_data = await self.get_product_history(uuid)
+        # Obtener 6 meses de historial
+        history_data = await self.get_product_history(uuid, months=6)
         
         if not history_data or 'data' not in history_data:
             product['trend'] = TrendAnalyzerV2._empty_analysis("No se pudo obtener historial")
@@ -838,7 +873,7 @@ class DropKillerScraper:
 def print_filtro_stats(stats: Dict):
     """Imprime estadísticas de filtrado"""
     print("\n" + "=" * 75)
-    print("  🎯 RESULTADO DE FILTROS EXPERTO v7.2")
+    print("  🎯 RESULTADO DE FILTROS EXPERTO v7.3")
     print("=" * 75)
     print(f"\n  📊 Analizados: {stats['total_analizados']} productos")
     print(f"  ✅ Pasaron filtros: {stats['pasaron']}")
@@ -877,14 +912,17 @@ def print_product_analysis(rank: int, product: Dict, show_details: bool = True):
     print(f"\n  #{rank}. {name}")
     print(f"      Score: {score}/100 {stars} | {pattern_emoji} {trend.pattern}")
     print(f"      Precio: ${product.get('providerPrice', 0):,} → ${margin['optimal_price']:,} | ROI: {margin['roi']}%")
+    print(f"      📅 Historial: {trend.semanas_con_50_ventas}/12 semanas con ≥50 ventas")
     
     if show_details and trend.weeks:
         print(f"      ┌─────────────────────────────────────────────────")
-        print(f"      │ VENTAS POR SEMANA:")
-        for w in trend.weeks[:4]:
+        print(f"      │ VENTAS POR SEMANA (últimas 12):")
+        for w in trend.weeks[:12]:
             week_label = "Actual" if w.week_number == 0 else f"Sem -{w.week_number}"
-            bar = "█" * min(20, w.total_sales // 10) if w.total_sales > 0 else "░"
-            print(f"      │  {week_label:8} │ {w.total_sales:4} ventas │ {w.days_with_sales}/7 días │ {bar}")
+            bar_len = min(20, w.total_sales // 10) if w.total_sales > 0 else 0
+            bar = "█" * bar_len if w.total_sales >= 50 else "░" * max(1, bar_len)
+            check = "✓" if w.total_sales >= 50 else "✗"
+            print(f"      │  {week_label:8} │ {w.total_sales:4} ventas │ {w.days_with_sales}/7 días │ {check} {bar}")
         
         if trend.week_over_week_growth:
             growth_str = " → ".join([f"{g:+.0f}%" for g in trend.week_over_week_growth[:3]])
@@ -918,10 +956,10 @@ def print_descartados_resumen(productos: List[Dict], max_show: int = 10):
     for p in descartados[:max_show]:
         name = p.get('name', 'N/A')[:30]
         filtro = p.get('filtro_result')
-        razones = ", ".join(filtro.razones_descarte[:2]) if filtro else "Sin datos"
         trend = p.get('trend')
-        pattern = trend.pattern if trend else "?"
-        print(f"      • {name}: {pattern} → {razones}")
+        semanas = trend.semanas_con_50_ventas if trend else 0
+        razones = filtro.razones_descarte[0][:35] if filtro and filtro.razones_descarte else "Sin datos"
+        print(f"      • {name}: [{semanas}/12 sem] → {razones}")
     
     if len(descartados) > max_show:
         print(f"      ... y {len(descartados) - max_show} más")
@@ -929,7 +967,7 @@ def print_descartados_resumen(productos: List[Dict], max_show: int = 10):
 
 # ============== MAIN ==============
 async def main():
-    parser = argparse.ArgumentParser(description="DropKiller Scraper v7.2 - Filtros Experto")
+    parser = argparse.ArgumentParser(description="DropKiller Scraper v7.3 - Filtros Experto (12 semanas)")
     parser.add_argument("--min-sales", type=int, default=10, help="Ventas mínimas 7d para extracción inicial")
     parser.add_argument("--max-products", type=int, default=100, help="Máx productos a extraer")
     parser.add_argument("--max-pages", type=int, default=5, help="Máx páginas")
@@ -945,10 +983,10 @@ async def main():
         sys.exit(1)
     
     print("=" * 75)
-    print("  ESTRATEGAS IA - Scraper v7.2 | Filtros Experto")
+    print("  ESTRATEGAS IA - Scraper v7.3 | Filtros Experto (12 semanas)")
     print("=" * 75)
     print(f"  País: {args.country} | Extracción: ventas >= {args.min_sales}")
-    print(f"  Filtros: V7d≥50 | Días≥4/7 | Caída≤30% | ROI≥20%")
+    print(f"  Filtros: 12 sem ≥50v | V7d≥50 | Días≥4/7 | Caída≤30% | ROI≥20%")
     print("=" * 75)
     
     scraper = DropKillerScraper(DROPKILLER_EMAIL, DROPKILLER_PASSWORD, debug=args.debug)
@@ -972,6 +1010,7 @@ async def main():
         
         # FASE 3: Análisis profundo + Filtros
         print(f"\n[FASE 3] Análisis profundo + Filtros ({len(products)} productos)...")
+        print(f"         (Analizando 12 semanas de historial por producto)")
         
         for i, product in enumerate(products, 1):
             name = product.get('name', 'N/A')[:25]
@@ -984,9 +1023,10 @@ async def main():
             filtro = product.get('filtro_result')
             
             if filtro and filtro.pasa:
-                print(f"✅ PASA | {trend.pattern[:12] if trend else '?'}")
+                print(f"✅ PASA | {trend.semanas_con_50_ventas}/12 sem | {trend.pattern[:10] if trend else '?'}")
             elif trend:
-                print(f"❌ {trend.pattern[:12]} | {filtro.razones_descarte[0][:25] if filtro else '?'}")
+                sem = trend.semanas_con_50_ventas
+                print(f"❌ {sem}/12 sem | {filtro.razones_descarte[0][:30] if filtro else '?'}")
             else:
                 print("❌ Sin datos")
             
@@ -1003,11 +1043,12 @@ async def main():
             # Ordenar por score
             aprobados.sort(key=lambda x: x.get('trend', TrendAnalysis(
                 weeks=[], total_sold=0, total_days=0, week_over_week_growth=[],
-                pattern="", pattern_reason="", alerts=[], score=0, peak_week=0, peak_vs_current=0
+                pattern="", pattern_reason="", alerts=[], score=0, peak_week=0, peak_vs_current=0,
+                semanas_con_50_ventas=0, historial_solido=False
             )).score, reverse=True)
             
             print("\n" + "=" * 75)
-            print(f"  🏆 PRODUCTOS APROBADOS ({len(aprobados)})")
+            print(f"  🏆 PRODUCTOS APROBADOS ({len(aprobados)}) - HISTORIAL PROBADO 12+ SEMANAS")
             print("=" * 75)
             
             for rank, product in enumerate(aprobados[:args.top], 1):
@@ -1016,10 +1057,11 @@ async def main():
             print("\n" + "=" * 75)
             print("  ⚠️ NINGÚN PRODUCTO PASÓ LOS FILTROS")
             print("=" * 75)
+            print("\n  Los filtros son MUY estrictos (12 semanas con ≥50 ventas).")
+            print("  Esto es intencional - solo queremos productos PROBADOS.")
             print("\n  Considera:")
-            print("      • Aumentar --max-products para analizar más")
-            print("      • Los filtros son estrictos por diseño")
-            print("      • Revisa --show-descartados para ver qué falló")
+            print("      • Aumentar --max-products a 200-500")
+            print("      • Revisar --show-descartados para ver qué tan cerca estuvieron")
         
         # Mostrar descartados si se pide
         if args.show_descartados:
